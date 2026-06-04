@@ -10,13 +10,13 @@ def build_session_review_prompt(
 ) -> str:
     if target == 'memory':
         target_instruction = (
-            "This backend-triggered review is ONLY for agent working memory. "
+            'This backend-triggered review is ONLY for agent working memory. '
             "If saving is warranted, call memory_editor(target='memory', operations=[...]). "
             "Do not call memory_editor with target='user'."
         )
     else:
         target_instruction = (
-            "This backend-triggered review is ONLY for user profile / preference content. "
+            'This backend-triggered review is ONLY for user profile / preference content. '
             "If saving is warranted, call memory_editor(target='user', operations=[...]). "
             "Do not call memory_editor with target='memory'."
         )
