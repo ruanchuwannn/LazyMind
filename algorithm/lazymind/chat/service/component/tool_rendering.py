@@ -23,7 +23,7 @@ _REPRESENTATIVE_TOOL_ARGUMENTS: dict[str, str] = {
     'BochaSearch_search': 'query',
     'url_fetch': 'url',
     'ArxivSearch_search': 'query',
-    'memory_editor': 'suggestions.title',
+    'memory_editor': 'target',
     'vocab_learn': 'suggestions.word <-> suggestions.synonym',
     'vision_extractor': 'url',
     'skill_editor': 'category/name',

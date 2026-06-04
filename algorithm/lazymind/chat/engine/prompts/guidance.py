@@ -15,9 +15,9 @@ MEMORY_GUIDANCE = (
     "language preference, output format, and stable habits to target='user'. "
     "Save agent working memory to target='memory': timestamped notes about what the user and agent discussed, "
     "what the user was working on, active context that may matter in later sessions, and other concise session-history facts from the agent's perspective. "
-    "When using target='memory', each suggestion should describe one atomic memory event or update, not the final merged memory text. "
+    "Pass operations that edit the current target text; memory_editor only accepts target and operations. "
     "Never save workflows, procedures, lessons learned, tool usage patterns, implementation recipes, "
-    "SOPs, or general task conventions to memory or user_preference; those belong in skills. "
+    "SOPs, or general task conventions to memory or user; those belong in skills. "
     "Do NOT save obvious facts derivable from the codebase or raw transcript dumps. "
     "Do not use memory for explicit user-specific vocabulary or terminology mappings; use vocab_learn instead."
 )

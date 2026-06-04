@@ -86,6 +86,31 @@ def _build_review_decision(
     }
 
 
+def _build_existing_state_context(config: dict, review_mode: str) -> str:
+    parts: list[str] = []
+
+    if review_mode in ('memory', 'combined'):
+        memory_content = str(config.get('memory') or '').strip()
+        user_pref_content = str(config.get('user_preference') or '').strip()
+        if memory_content or user_pref_content:
+            parts.append('\n\n--- EXISTING STATE ---')
+            parts.append(
+                'Below is the CURRENT memory and user profile content stored on the backend. '
+                'Read it before deciding what to change.'
+            )
+            parts.append(
+                'Base memory_editor operations on this existing content: retain still-valid entries, '
+                'add new entries, and correct or remove only outdated or wrong content.'
+            )
+            if memory_content:
+                parts.append(f'\n## Current agent working memory (target=memory)\n{memory_content}')
+            if user_pref_content:
+                parts.append(f'\n## Current user profile (target=user)\n{user_pref_content}')
+            parts.append('--- END EXISTING STATE ---\n')
+
+    return '\n'.join(parts)
+
+
 def _spawn_background_review(
     config: dict,
     llm: Any,
@@ -97,6 +122,7 @@ def _spawn_background_review(
     review_tools = REVIEW_TOOLS.get(review_mode, [])
     runtime_review_tools = _resolve_review_runtime_tools(review_tools)
     review_prompt = REVIEW_PROMPTS.get(review_mode, COMBINED_REVIEW_PROMPT)
+    review_prompt = review_prompt + _build_existing_state_context(config, review_mode)
     if not review_tools:
         print(f'[bg-review:{review_mode}] SKIP no review tools')
         return

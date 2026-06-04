@@ -1,39 +1,9 @@
+import sys
+from types import ModuleType
+
 from lazymind.chat.engine.tools import memory as memory_mod
 from lazymind.chat.engine.tools import skill_manager as skill_manager_mod
 from lazymind.chat.engine.tools.infra.suggestion import Suggestion
-
-
-def test_memory_submits_core_api_suggestion_paths(monkeypatch):
-    calls = []
-
-    def fake_post_core_api(path, payload):
-        calls.append((path, payload))
-        return {'persisted': 'core_api', 'url': f'http://core{path}'}
-
-    monkeypatch.setattr(memory_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
-    monkeypatch.setattr(memory_mod, 'post_core_api', fake_post_core_api)
-
-    suggestions = [
-        {
-            'title': 'Keep replies concise',
-            'content': 'The user consistently prefers concise answers.',
-            'reason': 'Observed across the session.',
-        }
-    ]
-
-    memory_result = memory_mod.memory_editor('memory', suggestions)
-    user_result = memory_mod.memory_editor('user', suggestions)
-
-    assert memory_result['success'] is True
-    assert memory_result['tool'] == 'memory_editor'
-    assert memory_result['result']['target'] == 'memory'
-    assert user_result['success'] is True
-    assert user_result['tool'] == 'memory_editor'
-    assert user_result['result']['target'] == 'user'
-    assert calls == [
-        ('/memory/suggestion', {'session_id': 'sid-1', 'suggestions': suggestions}),
-        ('/user_preference/suggestion', {'session_id': 'sid-1', 'suggestions': suggestions}),
-    ]
 
 
 def test_memory_requires_session_id(monkeypatch):
@@ -41,7 +11,7 @@ def test_memory_requires_session_id(monkeypatch):
 
     result = memory_mod.memory_editor(
         'memory',
-        [{'title': 'Remember this', 'content': 'Store as a durable suggestion.'}],
+        [{'op': 'replace_all', 'content': 'new'}],
     )
 
     assert result == {
@@ -53,21 +23,95 @@ def test_memory_requires_session_id(monkeypatch):
     }
 
 
-def test_memory_rejects_too_many_suggestions(monkeypatch):
+def test_memory_rejects_user_preference_target(monkeypatch):
     monkeypatch.setattr(memory_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
 
     result = memory_mod.memory_editor(
-        'memory',
-        [{'title': f'item-{i}', 'content': 'x'} for i in range(6)],
+        'user_preference',
+        [{'op': 'replace_all', 'content': 'new'}],
     )
 
     assert result == {
         'success': False,
         'tool': 'memory_editor',
         'error': {
-            'reason': 'At most 5 suggestions are allowed per call; got 6.',
+            'reason': "Unknown target 'user_preference'; expected one of 'memory', 'user'.",
         },
     }
+
+
+def test_memory_editor_operations_write_memory_review(monkeypatch):
+    assert not hasattr(memory_mod, 'memory')
+
+    class FakeUnprocessableContentError(ValueError):
+        pass
+
+    fake_memory_generate = ModuleType('lazymind.review.service.memory_generate')
+    fake_memory_generate.UnprocessableContentError = FakeUnprocessableContentError
+    fake_memory_generate._apply_memory_edit_operations = (
+        lambda current, payload: current.replace('old', payload['operations'][0]['new'])
+    )
+    fake_memory_generate._apply_user_preference_edit_operations = (
+        lambda current, payload: current.replace('old', payload['operations'][0]['new'])
+    )
+    fake_memory_generate._validate_generated_content = (
+        lambda memory_type, content: content
+    )
+
+    records = []
+    fake_memory_db = ModuleType('lazymind.review.memory.db')
+
+    def fake_insert_memory_review_record(**kwargs):
+        records.append(kwargs)
+        return {'id': 'review-1', 'review_status': 'pending'}
+
+    fake_memory_db.insert_memory_review_record = fake_insert_memory_review_record
+
+    monkeypatch.setitem(
+        sys.modules,
+        'lazymind.review.service.memory_generate',
+        fake_memory_generate,
+    )
+    monkeypatch.setitem(sys.modules, 'lazymind.review.memory.db', fake_memory_db)
+    monkeypatch.setattr(
+        memory_mod.lazyllm,
+        'globals',
+        {'agentic_config': {'session_id': 'sid-1', 'memory': 'old', 'user': 'old'}},
+    )
+
+    memory_result = memory_mod.memory_editor(
+        'memory',
+        [{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
+    )
+    user_result = memory_mod.memory_editor(
+        'user',
+        [{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
+    )
+
+    assert memory_result['success'] is True
+    assert memory_result['tool'] == 'memory_editor'
+    assert memory_result['result']['target'] == 'memory'
+    assert memory_result['result']['persisted'] == 'memory_review'
+    assert user_result['success'] is True
+    assert user_result['tool'] == 'memory_editor'
+    assert user_result['result']['target'] == 'user'
+    assert user_result['result']['storage_target'] == 'user_preference'
+    assert records == [
+        {
+            'target': 'memory',
+            'session_id': 'sid-1',
+            'source_content': 'old',
+            'content': 'new',
+            'operations': [{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
+        },
+        {
+            'target': 'user_preference',
+            'session_id': 'sid-1',
+            'source_content': 'old',
+            'content': 'new',
+            'operations': [{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
+        },
+    ]
 
 
 def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
