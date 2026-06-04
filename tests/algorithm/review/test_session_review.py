@@ -22,33 +22,72 @@ def _package(name: str) -> ModuleType:
     return module
 
 
-def _load_session_review_module():
-    module_path = Path(_ALGO) / 'lazymind/review/memory/session_review.py'
-    spec = importlib.util.spec_from_file_location('test_session_review_module', module_path)
+def _load_module(module_name: str, module_path: Path):
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
     assert spec is not None
     assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_review_modules():
+    module_names = [
+        'lazymind',
+        'lazymind.review',
+        'lazymind.review.memory',
+        'lazymind.review.memory.prompts',
+        'lazymind.review.memory.utils',
+        'lazymind.review.service',
+        'lazymind.review.service.session_review',
+        'lazymind.review.prompts',
+    ]
+    original_modules = {name: sys.modules.get(name) for name in module_names}
 
     fake_prompts = ModuleType('lazymind.review.prompts')
     fake_prompts.MEMORY_REVIEW_PROMPT = 'MEMORY REVIEW PROMPT'
     fake_modules = {
         'lazymind': _package('lazymind'),
         'lazymind.review': _package('lazymind.review'),
+        'lazymind.review.memory': _package('lazymind.review.memory'),
+        'lazymind.review.service': _package('lazymind.review.service'),
         'lazymind.review.prompts': fake_prompts,
     }
-    original_modules = {name: sys.modules.get(name) for name in fake_modules}
 
-    module = importlib.util.module_from_spec(spec)
     try:
         sys.modules.update(fake_modules)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        return module
+        memory_prompts = _load_module(
+            'lazymind.review.memory.prompts',
+            Path(_ALGO) / 'lazymind/review/memory/prompts.py',
+        )
+        memory_utils = _load_module(
+            'lazymind.review.memory.utils',
+            Path(_ALGO) / 'lazymind/review/memory/utils.py',
+        )
+        session_review = _load_module(
+            'lazymind.review.service.session_review',
+            Path(_ALGO) / 'lazymind/review/service/session_review.py',
+        )
+        return SimpleNamespace(
+            memory_prompts=memory_prompts,
+            memory_utils=memory_utils,
+            session_review=session_review,
+        )
     finally:
         for name, original in original_modules.items():
             if original is None:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = original
+
+
+def _load_session_review_module():
+    return _load_review_modules().session_review
+
+
+def _load_memory_utils_module():
+    return _load_review_modules().memory_utils
 
 
 def _install_runtime_modules(monkeypatch, *, tools: ModuleType, config: Any) -> None:
@@ -212,9 +251,9 @@ def test_review_session_reports_no_tool_submission(monkeypatch):
 
 
 def test_memory_editor_submission_can_be_read_from_tool_history():
-    session_review = _load_session_review_module()
+    memory_utils = _load_memory_utils_module()
 
-    assert session_review._memory_editor_submitted(
+    assert memory_utils.memory_editor_submitted(
         {
             'history': [
                 {
@@ -231,9 +270,9 @@ def test_memory_editor_submission_can_be_read_from_tool_history():
 
 
 def test_failed_memory_editor_result_is_not_submitted():
-    session_review = _load_session_review_module()
+    memory_utils = _load_memory_utils_module()
 
-    assert not session_review._memory_editor_submitted(
+    assert not memory_utils.memory_editor_submitted(
         {
             'completed': [
                 {

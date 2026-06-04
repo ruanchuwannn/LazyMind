@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from lazymind.review.memory.session_review import (
+from lazymind.review.service.session_review import (
     ChatMessage,
     ReviewTarget,
     generate_session_review,

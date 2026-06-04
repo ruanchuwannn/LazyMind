@@ -1,7 +1,7 @@
 import sys
 from types import ModuleType
 
-from lazymind.chat.engine.tools import memory as memory_mod
+import lazymind.chat.engine.tools.memory_editor as memory_mod
 from lazymind.chat.engine.tools import skill_manager as skill_manager_mod
 from lazymind.chat.engine.tools.infra.suggestion import Suggestion
 
