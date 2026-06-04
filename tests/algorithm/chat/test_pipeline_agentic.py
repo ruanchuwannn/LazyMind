@@ -94,11 +94,6 @@ def _import_agentic_module(monkeypatch):
     fake_prompts._MEMORY_REVIEW_PROMPT = ''
     fake_prompts._SKILL_REVIEW_PROMPT = ''
 
-    # Fake deep dependency modules to avoid import chain issues
-    fake_review = ModuleType('chat.components.agentic.review')
-    fake_review._build_review_decision = lambda *a, **kw: {'mode': None}
-    fake_review._spawn_background_review = lambda *a, **kw: None
-
     fake_skill_manager = ModuleType('chat.tools.skill_manager')
     fake_skill_manager.list_all_skills_with_category = lambda *a, **kw: []
 
@@ -151,7 +146,6 @@ def _import_agentic_module(monkeypatch):
     monkeypatch.setitem(sys.modules, 'lazyllm.tools.sandbox.sandbox_base', fake_lazyllm_tools_sandbox_base)
     monkeypatch.setitem(sys.modules, 'tenacity', fake_tenacity)
     monkeypatch.setitem(sys.modules, 'chat.prompts.agentic', fake_prompts)
-    monkeypatch.setitem(sys.modules, 'chat.components.agentic.review', fake_review)
     monkeypatch.setitem(sys.modules, 'chat.tools.skill_manager', fake_skill_manager)
 
     return importlib.import_module('chat.pipelines.agentic')
