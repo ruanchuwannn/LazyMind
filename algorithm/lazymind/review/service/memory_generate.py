@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import OrderedDict
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
 
 from lazyllm import AutoModel
@@ -16,15 +17,16 @@ except Exception:  # pragma: no cover - optional dependency
 MemoryType = Literal['skill', 'memory', 'user_preference']
 
 _MAX_GENERATE_ATTEMPTS = 3
-_MAX_MANAGED_CONTENT_CHARS = 1400
+_MAX_MANAGED_CONTENT_CHARS = 1500
+_MAX_OLDER_MEMORY_SUMMARY_CHARS = 500
 _JSON_BLOCK_RE = re.compile(r'```json\s*(.*?)\s*```', re.DOTALL)
-_CODE_BLOCK_RE = re.compile(r'```(?:[a-zA-Z0-9_+-]+)?\s*(.*?)\s*```', re.DOTALL)
 _THINK_BLOCK_RE = re.compile(r'<think>.*?</think\s*>', re.DOTALL | re.IGNORECASE)
 _SINGLE_STRING_FIELD_RE = re.compile(
     r'^\{\s*"(?P<key>[^"\\]+)"\s*:\s*"(?P<value>(?:[^"\\]|\\.)*)"\s*,?\s*\}\s*$',
     re.DOTALL,
 )
 _DATE_BULLET_RE = re.compile(r'^-\s+(.+?)(?::\s*(.*))?$')
+_ISO_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 _SECTION_HEADER_TO_KEY = OrderedDict((
     ('用户在做', 'doing'),
     ('我们讨论了', 'discussed'),
@@ -40,47 +42,6 @@ class BadRequestError(ValueError):
 
 class UnprocessableContentError(ValueError):
     """Raised when generated content is repeatedly invalid."""
-
-
-def _normalize_suggestions(raw_suggestions: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    if raw_suggestions is None:
-        return []
-    if not isinstance(raw_suggestions, list):
-        raise BadRequestError("'suggestions' must be an array when provided.")
-
-    normalized: List[Dict[str, Any]] = []
-    for idx, item in enumerate(raw_suggestions):
-        if not isinstance(item, dict):
-            raise BadRequestError(f"'suggestions[{idx}]' must be an object.")
-
-        title = item.get('title')
-        content = item.get('content')
-        reason = item.get('reason')
-        outdated = item.get('outdated')
-
-        if not isinstance(title, str) or not title.strip():
-            raise BadRequestError(
-                f"'suggestions[{idx}].title' must be a non-empty string."
-            )
-        if not isinstance(content, str) or not content.strip():
-            raise BadRequestError(
-                f"'suggestions[{idx}].content' must be a non-empty string."
-            )
-        if reason is not None and not isinstance(reason, str):
-            raise BadRequestError(f"'suggestions[{idx}].reason' must be a string.")
-        if outdated is not None and not isinstance(outdated, bool):
-            raise BadRequestError(f"'suggestions[{idx}].outdated' must be a boolean.")
-
-        normalized_item: Dict[str, Any] = {
-            'title': title.strip(),
-            'content': content.strip(),
-        }
-        if isinstance(reason, str) and reason.strip():
-            normalized_item['reason'] = reason.strip()
-        if outdated is not None:
-            normalized_item['outdated'] = outdated
-        normalized.append(normalized_item)
-    return normalized
 
 
 def _extract_json_object(raw: Any) -> Dict[str, Any]:
@@ -163,23 +124,6 @@ def _extract_single_string_field_object(text: str) -> Optional[Dict[str, str]]:
     return {key: value}
 
 
-def _extract_skill_content(raw: Any) -> str:
-    text = str(raw).strip()
-    text = _THINK_BLOCK_RE.sub('', text).strip()
-
-    match = _CODE_BLOCK_RE.search(text)
-    if match:
-        text = match.group(1).strip()
-
-    frontmatter_start = text.find('---')
-    if frontmatter_start > 0:
-        text = text[frontmatter_start:].strip()
-
-    if text.endswith('```'):
-        text = text[:-3].rstrip()
-    return text
-
-
 def _validate_generated_content(memory_type: MemoryType, content: Any) -> str:
     if not isinstance(content, str):
         raise UnprocessableContentError("Generated field 'content' must be a string.")
@@ -211,15 +155,38 @@ _COMMON_OUTPUT_SPEC = (
     '3. content must be the final complete text after merging all valid input modification requests; do not provide only a patch.\n'  # noqa: E501
 )
 
+_EDIT_OUTPUT_SPEC = (
+    'Output requirements:\n'
+    '1. Output only a JSON object; no markdown code blocks, no extra text.\n'
+    '2. Preferred JSON structure is {"operations": [...]}.\n'
+    '3. Supported operations are only replace_text and replace_all.\n'
+    '4. Do not output any operation except replace_text or replace_all.\n'
+    '5. Prefer {"op":"replace_text","old":"<exact old text>","new":"<new text>"} for exact local edits when old is a non-empty substring copied verbatim from current content.\n'  # noqa: E501
+    '6. You may output multiple replace_text operations; they will be applied in order.\n'
+    '7. Before final output, mentally apply operations in order to the current content using exact plain string search.\n'  # noqa: E501
+    '8. For every replace_text, old must be found exactly in the content state at the moment that operation runs.\n'  # noqa: E501
+    '9. Keep every replace_text old value as short as safely possible: use one exact line for line deletion/replacement, or one exact phrase/sentence for wording edits.\n'  # noqa: E501
+    '10. Never use a whole section, a heading plus body, multiple bullets/list items, or unrelated paragraphs as one replace_text old. Split the change into several smaller replace_text operations instead.\n'  # noqa: E501
+    '11. replace_text always replaces the first matching occurrence only.\n'
+    '12. For delete/remove requests, the target text may appear in old but MUST NOT appear in new. Do not add, restore, or reword text that user_instruct asks to delete.\n'  # noqa: E501
+    '13. Do not output replace_text operations where old and new are identical.\n'
+    '14. If the exact old text is absent, outdated, ambiguous, not copied verbatim, or not enough to apply all requested changes safely, output full {"content": "..."} instead of operations.\n'  # noqa: E501
+    '15. You may also use {"op":"replace_all","content":"<new full text>"} for full replacement.\n'
+    '16. If you use replace_all, it MUST be the only operation in the operations array; do not output replace_all together with any other operation.\n'  # noqa: E501
+    '17. The final generated content must reflect the requested change.\n'
+)
+
 _MEMORY_EDIT_OUTPUT_SPEC = (
     'Output requirements:\n'
     '1. Output only a JSON object; no markdown code blocks, no extra text.\n'
     '2. JSON structure must be {"operations": [...]}.\n'
     '3. operations is a list of edit commands that will be applied inside the generate endpoint and then rendered back to full memory text.\n'  # noqa: E501
-    '4. Prefer {"op":"upsert_day","date":"YYYY-MM-DD","doing":[...],"discussed":[...],"status":[...],"replace":[...]} for structured day-level updates.\n'  # noqa: E501
-    '5. You may use {"op":"replace_text","old":"<exact old text>","new":"<new text>"} for one local text fix; replace_text always replaces the first matching occurrence only.\n'  # noqa: E501
-    '6. replace is optional and may contain any of ["doing","discussed","status"]; for listed sections, replace the old section summary for that day instead of merging.\n'  # noqa: E501
-    '7. Use {"op":"replace_all","content":"<new full memory text>"} only as a last resort when the current memory is too malformed or legacy to edit safely with local text replacement or day-level operations.\n'  # noqa: E501
+    '4. Supported operations are only replace_text and replace_all; do not output any custom operation.\n'  # noqa: E501
+    '5. Prefer {"op":"replace_text","old":"<exact old text>","new":"<new text>"} for exact local edits; replace_text always replaces the first matching occurrence only.\n'  # noqa: E501
+    '6. To add a new day, output one replace_text with old="" and new as a complete day block beginning with "- YYYY-MM-DD".\n'  # noqa: E501
+    '7. A complete day block should include the date plus relevant fields such as 用户在做, 我们讨论了, 状态/冲突, and replacement summaries for sections that should supersede old text.\n'  # noqa: E501
+    '8. To modify an existing day, prefer replacing one exact section line or one exact full day block with a corrected full day block.\n'  # noqa: E501
+    '9. Use {"op":"replace_all","content":"<new full memory text>"} only as a last resort when the current memory cannot be edited safely with replace_text.\n'  # noqa: E501
 )
 
 _USER_PREFERENCE_EDIT_OUTPUT_SPEC = (
@@ -235,7 +202,7 @@ _USER_PREFERENCE_EDIT_OUTPUT_SPEC = (
 
 _COMMON_LANGUAGE_RULES = (
     '[Language]\n'
-    '- Determine the output language from the language used in current content, suggestions, and user_instruct.\n'
+    '- Determine the output language from the language used in current content and user_instruct.\n'
     '- If the majority of the input is in Chinese (简体中文), write the generated content in Chinese.\n'
     '- If the majority of the input is in English, write the generated content in English.\n'
     '- Be consistent: do not mix languages within the generated content.\n'
@@ -245,55 +212,37 @@ _COMMON_LANGUAGE_RULES = (
 def _format_preservation_rules(entity: str) -> str:
     return (
         '[Content preservation rules (CRITICAL)]\n'
-        f'- You MUST preserve ALL existing {entity} that are NOT explicitly targeted by suggestions or user_instruct.\n'  # noqa: E501
-        f'- When a suggestion only affects one {entity}, keep all others IDENTICAL to the original (same wording, same order).\n'  # noqa: E501
+        f'- You MUST preserve ALL existing {entity} that are NOT explicitly targeted by user_instruct.\n'  # noqa: E501
+        f'- When user_instruct only affects one {entity}, keep all others IDENTICAL to the original (same wording, same order).\n'  # noqa: E501
         '- Do NOT rephrase, reformat, or reorganize anything that is not being changed.\n'
         '- If nothing in the current content needs to change for a particular part, copy it VERBATIM into your output.\n'  # noqa: E501
-        '- Only remove content that is explicitly marked as outdated by a suggestion, or explicitly contradicted by user_instruct.\n'  # noqa: E501
+        '- Only remove content that is explicitly marked as outdated or explicitly contradicted by user_instruct.\n'  # noqa: E501
     )
 
 
 def _format_prompt_tail(
     content: str,
-    suggestions: List[Dict[str, Any]],
-    user_instruct: Optional[str],
+    user_instruct: str,
     output_spec: str = _COMMON_OUTPUT_SPEC,
     previous_error: Optional[str] = None,
 ) -> str:
     return (
         f'{_format_retry_note(previous_error)}'
-        f'{_format_inputs_block(content, suggestions, user_instruct)}'
+        f'{_format_inputs_block(content, user_instruct)}'
         f'{output_spec}'
     )
 
 
 def _format_inputs_block(
     content: str,
-    suggestions: List[Dict[str, Any]],
-    user_instruct: Optional[str],
+    user_instruct: str,
 ) -> str:
-    sections = [
+    return (
         'Input information:\n'
         '1) Current content (full old text):\n'
         f'{content}\n\n'
-    ]
-
-    next_index = 2
-    if suggestions:
-        sections.append(
-            f'{next_index}) suggestions (JSON array; each item may contain an outdated field):\n'
-            '- outdated=TRUE means the suggestion is expired and for reference only; ignore if irrelevant to the current modification.\n'  # noqa: E501
-            '- outdated=FALSE or missing means the suggestion is still valid and content should be updated accordingly.\n'  # noqa: E501
-            f'{json.dumps(suggestions, ensure_ascii=False)}\n\n'
-        )
-        next_index += 1
-
-    if user_instruct:
-        sections.append(
-            f'{next_index}) user_instruct (direct user instruction):\n{user_instruct}\n\n'
-        )
-
-    return ''.join(sections)
+        f'2) user_instruct (direct user instruction):\n{user_instruct}\n\n'
+    )
 
 
 def _normalize_user_instruct(raw_user_instruct: Any) -> Optional[str]:
@@ -309,6 +258,13 @@ def _normalize_user_instruct(raw_user_instruct: Any) -> Optional[str]:
 def _format_retry_note(previous_error: Optional[str]) -> str:
     if not previous_error:
         return ''
+    if 'replace_text could not find' in previous_error or "field 'old'" in previous_error:
+        return (
+            f'\nPrevious output was invalid, error: {previous_error}\n'
+            'Correction requirement: do not retry with any replace_text operation unless each old value is copied '
+            'verbatim from current content and can be found by exact plain string search. If you cannot guarantee '
+            'a safe local edit, output full {"content": "..."} instead of operations.\n'
+        )
     return f'\nPrevious output was invalid, error: {previous_error}\nPlease correct and regenerate.\n'
 
 
@@ -318,23 +274,15 @@ def _compact_len(text: Any) -> int:
 
 def _managed_content_governance_note(
     content: str,
-    suggestions: List[Dict[str, Any]],
     limit: int,
 ) -> str:
-    suggestions_length = sum(
-        _compact_len(item.get('title', ''))
-        + _compact_len(item.get('content', ''))
-        + _compact_len(item.get('reason', ''))
-        for item in suggestions
-    )
     current_length = _compact_len(content)
     remaining = limit - current_length
     return (
         f'- Current content length after removing whitespace: {current_length} characters.\n'
-        f'- Suggestions total length after removing whitespace: {suggestions_length} characters.\n'
-        f'- Remaining budget before merging suggestions: {remaining} characters.\n'
+        f'- Remaining budget before applying user_instruct: {remaining} characters.\n'
         '- Treat existing content as a bounded, continuously maintained store, not an append-only log.\n'  # noqa: E501
-        '- Outdated=TRUE is only one stale signal; also remove or rewrite existing content that is proven outdated, wrong, conflicting, redundant, overly specific, or low-value based on the new suggestions, user_instruct, or current context.\n'  # noqa: E501
+        '- Outdated=TRUE is only one stale signal when it appears inside user_instruct; also remove or rewrite existing content that is proven outdated, wrong, conflicting, redundant, overly specific, or low-value based on user_instruct or current context.\n'  # noqa: E501
         '- Even when the limit is not exceeded, proactively compress, consolidate, or delete stale information instead of preserving it by default.\n'  # noqa: E501
         '- Add new information only after resolving stale or conflicting old information; keep the final content concise and useful.\n'  # noqa: E501
     )
@@ -342,12 +290,11 @@ def _managed_content_governance_note(
 
 def _build_skill_prompt(
     content: str,
-    suggestions: List[Dict[str, Any]],
-    user_instruct: Optional[str],
+    user_instruct: str,
     previous_error: Optional[str] = None,
 ) -> str:
     return (
-        'You are a SKILL.md editor. Generate the complete new SKILL.md content based on the input; no explanations or summaries.\n'  # noqa: E501
+        'You are a SKILL.md editor. Generate a JSON draft update based on the input; no explanations or summaries.\n'  # noqa: E501
         'memory type: skill\n'
         'SKILL.md is an abstract SOP (Standard Operating Procedure) that guides the agent to complete tasks '
         'using a unified methodology when the description scope is satisfied.\n'
@@ -360,15 +307,29 @@ def _build_skill_prompt(
         'this is the sole basis for routing/recalling this skill.\n'
         '\n'
         '[Scope and description linkage (important)]\n'
-        '- When suggestions or user_instruct involve expanding/narrowing/adjusting the skill scope, trigger scenarios, or coverage, '  # noqa: E501
+        '- When user_instruct involves expanding/narrowing/adjusting the skill scope, trigger scenarios, or coverage, '  # noqa: E501
         'update the frontmatter description accordingly to accurately reflect the new scope.\n'
         '- When changes only affect methodology details in the body without changing the scope, keep description unchanged.\n'  # noqa: E501
+        '- When the requested change is only deleting or editing one body line, do NOT update frontmatter description, title, tags, version, author, created, or updated.\n'  # noqa: E501
         '\n'
         '[Body content rules]\n'
+        '- replace_text is the primary edit path for skill drafts. Prefer multiple small replace_text operations over full replacement whenever the exact targets exist in current content.\n'  # noqa: E501
+        '- Apply only the exact target explicitly requested by user_instruct. Do not infer related cleanup in other sections.\n'  # noqa: E501
+        '- When user_instruct quotes a line, phrase, or word to remove/edit, modify only that quoted target and any necessary numbered-list renumbering.\n'  # noqa: E501
+        '- Do not rewrite Usage, Examples, or neighboring sections unless a suggestion explicitly targets text in those sections.\n'  # noqa: E501
+        '- Use replace_text only for exact local edits whose old text is copied verbatim from current content.\n'
+        '- Keep every replace_text old value as short as safely possible: use one exact full line for line deletion/replacement, or one exact phrase/sentence for wording edits.\n'  # noqa: E501
+        '- Hard limit for replace_text old: prefer 1 line; never include more than 1 newline; never exceed 200 characters unless the exact single line itself is longer.\n'  # noqa: E501
+        '- Never use a whole section, a heading plus body, or multiple bullets/list items as one replace_text old. Edit each affected line or phrase separately.\n'  # noqa: E501
+        '- Do not make a replace_text old value span multiple markdown sections, headings, or unrelated paragraphs. Split the change into several smaller replace_text operations instead.\n'  # noqa: E501
+        '- For numbered-list deletion or insertion, use one replace_text to delete/insert the target line and separate replace_text operations to renumber each affected line; after deleting item N, renumber N+1 to N, N+2 to N+1, and so on. Never leave numbering gaps.\n'  # noqa: E501
+        '- For delete/remove requests, the quoted target text may appear in old but MUST NOT appear in new. Do not add, restore, or reword text that user_instruct asks to delete.\n'  # noqa: E501
+        '- Only when the user explicitly asks to delete, clear, or remove all skill content, output an empty draft via full {"content": ""} or a single replace_all operation with empty content.\n'  # noqa: E501
+        '- For a request like "delete/remove this line", use replace_text only if you can copy the exact line from current content as old; otherwise use replace_all instead of fabricating old text.\n'  # noqa: E501
         '- The body must be an abstract SOP: steps, decision criteria, checklists, general rules, output format requirements, etc.\n'  # noqa: E501
         '- Do not include specific cases, project names, specific data, conversation snippets, or one-time examples in the SKILL.md body; '  # noqa: E501
         'if examples are needed, use only highly abstract placeholder illustrations.\n'
-        '- If suggestions or user_instruct contain specific cases, abstract the reusable experience into general rules '
+        '- If user_instruct contains specific cases, abstract the reusable experience into general rules '
         'before writing to the body; do not copy cases verbatim.\n'
         '- Recommended body structure: Applicable conditions / Steps / Judgment & validation / Common pitfalls / Output spec (trim as needed).\n'  # noqa: E501
         '\n'
@@ -378,16 +339,15 @@ def _build_skill_prompt(
         '\n'
         '[Length control]\n'
         '- Total length of SKILL.md (including frontmatter) must be within 2000 characters; keep it concise.\n'
-        f'{_managed_content_governance_note(content, suggestions, 2000)}'
+        f'{_managed_content_governance_note(content, 2000)}'
         '\n'
-        f'{_format_prompt_tail(content, suggestions, user_instruct, previous_error)}'
+        f'{_format_prompt_tail(content, user_instruct, _EDIT_OUTPUT_SPEC, previous_error)}'
     )
 
 
 def _build_memory_prompt(
     content: str,
-    suggestions: List[Dict[str, Any]],
-    user_instruct: Optional[str],
+    user_instruct: str,
     previous_error: Optional[str] = None,
 ) -> str:
     return (
@@ -395,7 +355,7 @@ def _build_memory_prompt(
         'memory type: memory\n'
         "memory stores the agent's own working memory about the user across sessions, such as: when a discussion happened, "  # noqa: E501
         'what the user and agent discussed, what the user was working on, ongoing context the agent may need to recall later, and other concise session-history facts.\n'  # noqa: E501
-        'The input suggestions are candidate memory events, not final text patches. Your job is to merge those events into the existing memory and regenerate the full compact memory.\n'  # noqa: E501
+        'The user_instruct may contain direct user edits or approved review suggestions. Treat them as candidate memory events, not final text patches.\n'  # noqa: E501
         '\n'
         '[Content boundaries]\n'
         '- Only record concise working-memory entries with future recall value; do not write raw chat logs, full transcript summaries, pure emotional expressions, or unrelated small talk.\n'  # noqa: E501
@@ -407,16 +367,16 @@ def _build_memory_prompt(
         '- If the current memory has local wording problems, slight format drift, or a user-edited phrase that should be corrected without rewriting the whole day structure, you may use `replace_text` for a local fix.\n'  # noqa: E501
         '- Preferred final format after editing: group by day. Use one top-level bullet per day, ideally `- YYYY-MM-DD`, then summarize that day under concise sub-lines such as `用户在做:`, `我们讨论了:`, and `状态/冲突:` when needed.\n'  # noqa: E501
         '- If the exact date is unknown, use the best available time anchor such as month, week, or relative session marker, but still merge nearby events together when they clearly belong to the same day or session window.\n'  # noqa: E501
-        '- Treat each suggestion as one atomic memory event to absorb into the day summary, not as a ready-made final line that must be copied verbatim.\n'  # noqa: E501
-        '- For day-level edits, prefer one `upsert_day` operation per affected day. Put concise final section summaries for that day into `doing`, `discussed`, and `status`.\n'  # noqa: E501
-        '- Use `replace` to overwrite a section when new information should supersede the old summary for that day; omit `replace` when simple merge is enough.\n'  # noqa: E501
+        '- Treat each approved suggestion inside user_instruct as one atomic memory event to absorb into the day summary, not as a ready-made final line that must be copied verbatim.\n'  # noqa: E501
+        '- For day-level additions, use replace_text with old="" and new as one complete day block with date, doing, discussed, status, and any section replacement summary.\n'  # noqa: E501
+        '- For day-level updates, either replace one exact section line or replace the exact full day block with a corrected full day block. Use replacement summaries when new information supersedes the old summary for that day.\n'  # noqa: E501
         '- When many events happen in one day, merge them into one daily entry and keep only the main threads, decisions, and follow-up context. Do not create a long bullet list of every small action.\n'  # noqa: E501
         '- When merging, deduplicate and consolidate: combine same or similar working-memory items into a more accurate statement; do not stack duplicates.\n'  # noqa: E501
         '- Conflict handling: if a new suggestion clearly supersedes an older memory on the same topic, keep only the new conclusion and record it under `状态/冲突:` as `已更新:` or `已废弃旧方案:` when useful.\n'  # noqa: E501
         '- If conflicting information is still unresolved, keep only the current best summary and mark it as `待定:` or `当前倾向:` under `状态/冲突:`.\n'  # noqa: E501
         '- Keep language concise and objective; compress aggressively so memory remains a compact aide-memoire rather than a diary.\n'  # noqa: E501
         '- `replace_text` always replaces the first matching occurrence only. If first-match replacement is unsafe or too ambiguous, use `replace_all` instead of trying to target a later occurrence.\n'  # noqa: E501
-        '- Use `replace_all` only when the current content cannot be edited safely with local text replacement or day-level operations.\n'  # noqa: E501
+        '- Use `replace_all` only when the current content cannot be edited safely with replace_text operations.\n'  # noqa: E501
         '\n'
         f'{_COMMON_LANGUAGE_RULES}'
         '\n'
@@ -424,16 +384,16 @@ def _build_memory_prompt(
         '\n'
         '[Length control]\n'
         f'- The final content must be within {_MAX_MANAGED_CONTENT_CHARS} characters after removing all whitespace; if needed, reduce low-value details and keep only the most important concise entries.\n'  # noqa: E501
-        f'{_managed_content_governance_note(content, suggestions, _MAX_MANAGED_CONTENT_CHARS)}'
+        f'{_managed_content_governance_note(content, _MAX_MANAGED_CONTENT_CHARS)}'
+        '- If memory exceeds the limit, older entries before the most recent week will be summarized into a concise "一周前摘要" section after operations are applied.\n'  # noqa: E501
         '\n'
-        f'{_format_prompt_tail(content, suggestions, user_instruct, _MEMORY_EDIT_OUTPUT_SPEC, previous_error)}'
+        f'{_format_prompt_tail(content, user_instruct, _MEMORY_EDIT_OUTPUT_SPEC, previous_error)}'
     )
 
 
 def _build_user_preference_prompt(
     content: str,
-    suggestions: List[Dict[str, Any]],
-    user_instruct: Optional[str],
+    user_instruct: str,
     previous_error: Optional[str] = None,
 ) -> str:
     return (
@@ -462,9 +422,9 @@ def _build_user_preference_prompt(
         '\n'
         '[Length control]\n'
         f'- The final content must be within {_MAX_MANAGED_CONTENT_CHARS} characters after removing all whitespace; if needed, reduce low-value details and keep only the most important concise entries.\n'  # noqa: E501
-        f'{_managed_content_governance_note(content, suggestions, _MAX_MANAGED_CONTENT_CHARS)}'
+        f'{_managed_content_governance_note(content, _MAX_MANAGED_CONTENT_CHARS)}'
         '\n'
-        f'{_format_prompt_tail(content, suggestions, user_instruct, _USER_PREFERENCE_EDIT_OUTPUT_SPEC, previous_error)}'
+        f'{_format_prompt_tail(content, user_instruct, _USER_PREFERENCE_EDIT_OUTPUT_SPEC, previous_error)}'
     )
 
 
@@ -478,8 +438,7 @@ _PROMPT_BUILDERS = {
 def _build_generate_prompt(
     memory_type: MemoryType,
     content: str,
-    suggestions: List[Dict[str, Any]],
-    user_instruct: Optional[str],
+    user_instruct: str,
     previous_error: Optional[str] = None,
 ) -> str:
     try:
@@ -488,7 +447,6 @@ def _build_generate_prompt(
         raise BadRequestError(f'Unsupported memory type: {memory_type!r}') from exc
     return builder(
         content=content,
-        suggestions=suggestions,
         user_instruct=user_instruct,
         previous_error=previous_error,
     )
@@ -502,25 +460,23 @@ class MemoryGeneratePipeline:
         self,
         memory_type: MemoryType,
         content: Any,
-        suggestions: Optional[List[Dict[str, Any]]],
         user_instruct: Any,
     ) -> str:
         if not isinstance(content, str):
             raise BadRequestError("'content' is required and must be a string.")
 
-        normalized_suggestions = _normalize_suggestions(suggestions)
         normalized_user_instruct = _normalize_user_instruct(user_instruct)
-        if not normalized_suggestions and normalized_user_instruct is None:
-            raise BadRequestError(
-                "At least one of 'suggestions' or 'user_instruct' must be provided."
-            )
+        if normalized_user_instruct is None:
+            raise BadRequestError("'user_instruct' must be a non-empty string.")
+
+        if memory_type == 'memory':
+            content = _compact_memory_to_recent_week(content)
 
         error: Optional[str] = None
         for _ in range(_MAX_GENERATE_ATTEMPTS):
             prompt = _build_generate_prompt(
                 memory_type=memory_type,
                 content=content,
-                suggestions=normalized_suggestions,
                 user_instruct=normalized_user_instruct,
                 previous_error=error,
             )
@@ -529,19 +485,12 @@ class MemoryGeneratePipeline:
                 parsed = _extract_json_object(raw)
                 if memory_type == 'memory':
                     edited_content = _apply_memory_edit_operations(content, parsed)
-                    return _validate_generated_content(memory_type, edited_content)
-                if memory_type == 'user_preference':
+                elif memory_type == 'user_preference':
                     edited_content = _apply_user_preference_edit_operations(content, parsed)
-                    return _validate_generated_content(memory_type, edited_content)
-                return _validate_generated_content(memory_type, parsed.get('content'))
+                else:
+                    edited_content = _apply_skill_edit_operations(content, parsed)
+                return _validate_generated_content(memory_type, edited_content)
             except UnprocessableContentError as exc:
-                if memory_type == 'skill':
-                    skill_content = _extract_skill_content(raw)
-                    validation_error = validate_skill_content(skill_content)
-                    if validation_error is None:
-                        return skill_content
-                    error = f'{exc}; raw skill fallback invalid: {validation_error}'
-                    continue
                 error = str(exc)
 
         raise UnprocessableContentError(
@@ -555,15 +504,120 @@ memory_generate_pipeline = MemoryGeneratePipeline()
 def generate_memory_content(
     memory_type: MemoryType,
     content: Any,
-    suggestions: Optional[List[Dict[str, Any]]],
     user_instruct: Any,
 ) -> str:
     return memory_generate_pipeline.generate(
         memory_type=memory_type,
         content=content,
-        suggestions=suggestions,
         user_instruct=user_instruct,
     )
+
+
+def _parse_edit_operations(payload: Dict[str, Any], *, entity_name: str) -> List[Dict[str, Any]]:
+    if 'content' in payload and 'operations' not in payload:
+        content = payload.get('content')
+        if not isinstance(content, str):
+            raise UnprocessableContentError("Generated field 'content' must be a string.")
+        return [{'op': 'replace_all', 'content': content.strip()}]
+
+    operations = payload.get('operations')
+    if not isinstance(operations, list) or not operations:
+        raise UnprocessableContentError(
+            f"Model output for {entity_name} must contain a non-empty 'operations' array."
+        )
+
+    normalized_ops: List[Dict[str, Any]] = []
+    for idx, raw_op in enumerate(operations):
+        if not isinstance(raw_op, dict):
+            raise UnprocessableContentError(f"'operations[{idx}]' must be an object.")
+        op_name = str(raw_op.get('op') or '').strip()
+        if op_name == 'replace_all':
+            content = raw_op.get('content')
+            if not isinstance(content, str):
+                raise UnprocessableContentError("replace_all requires a string field 'content'.")
+            if len(operations) != 1:
+                raise UnprocessableContentError('replace_all must be the only operation when used.')
+            return [{'op': 'replace_all', 'content': content.strip()}]
+        if op_name == 'replace_text':
+            old = raw_op.get('old')
+            new = raw_op.get('new')
+            if not isinstance(old, str):
+                raise UnprocessableContentError("replace_text requires a string field 'old'.")
+            if not isinstance(new, str):
+                raise UnprocessableContentError("replace_text requires a string field 'new'.")
+            if old == '' and new != '':
+                raise UnprocessableContentError(
+                    "replace_text with an empty 'old' is only allowed when 'new' is also empty."
+                )
+            normalized_ops.append({
+                'op': 'replace_text',
+                'old': old,
+                'new': new,
+            })
+            continue
+        raise UnprocessableContentError(
+            f"Unsupported {entity_name} operation {op_name!r}; expected 'replace_text' or 'replace_all'."
+        )
+    return normalized_ops
+
+
+def _apply_replace_text_operation(current: str, old: str, new: str, *, entity_name: str) -> str:
+    replacement = '' if not new.strip() else new
+    if not replacement:
+        lines = current.splitlines()
+        for idx, line in enumerate(lines):
+            if line == old:
+                return '\n'.join(lines[:idx] + lines[idx + 1:])
+    return _apply_replace_text(current, old, replacement, entity_name=entity_name)
+
+
+def _normalize_numbered_lists(content: str) -> str:
+    lines = content.splitlines()
+    normalized: List[str] = []
+    expected: Optional[int] = None
+    last_indent: Optional[str] = None
+    item_re = re.compile(r'^(\s*)(\d+)\.\s+(.*)$')
+
+    for line in lines:
+        match = item_re.match(line)
+        if not match:
+            normalized.append(line)
+            if line.strip():
+                expected = None
+                last_indent = None
+            continue
+
+        indent, number, body = match.groups()
+        if expected is None or indent != last_indent:
+            expected = int(number)
+            last_indent = indent
+        normalized.append(f'{indent}{expected}. {body}')
+        expected += 1
+
+    return '\n'.join(normalized)
+
+
+def _apply_skill_edit_operations(current_content: str, payload: Dict[str, Any]) -> str:
+    operations = _parse_edit_operations(payload, entity_name='skill')
+    if operations[0]['op'] == 'replace_all':
+        return operations[0]['content']
+
+    current = current_content
+    applied_delete = False
+    for op in operations:
+        if op['old'] == op['new']:
+            continue
+        current = _apply_replace_text_operation(
+            current,
+            op['old'],
+            op['new'],
+            entity_name='skill',
+        )
+        if not op['new'].strip():
+            applied_delete = True
+    if applied_delete:
+        current = _normalize_numbered_lists(current)
+    return current.strip()
 
 
 def _normalize_string_list(raw: Any, *, field_name: str) -> List[str]:
@@ -585,6 +639,12 @@ def _normalize_string_list(raw: Any, *, field_name: str) -> List[str]:
 
 
 def _parse_memory_operations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if 'content' in payload and 'operations' not in payload:
+        content = payload.get('content')
+        if not isinstance(content, str):
+            raise UnprocessableContentError("Generated field 'content' must be a string.")
+        return [{'op': 'replace_all', 'content': content.strip()}]
+
     operations = payload.get('operations')
     if not isinstance(operations, list) or not operations:
         raise UnprocessableContentError("Model output for memory must contain a non-empty 'operations' array.")
@@ -604,8 +664,8 @@ def _parse_memory_operations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         if op_name == 'replace_text':
             old = raw_op.get('old')
             new = raw_op.get('new')
-            if not isinstance(old, str) or not old:
-                raise UnprocessableContentError("replace_text requires a non-empty string field 'old'.")
+            if not isinstance(old, str):
+                raise UnprocessableContentError("replace_text requires a string field 'old'.")
             if not isinstance(new, str):
                 raise UnprocessableContentError("replace_text requires a string field 'new'.")
             normalized_ops.append({
@@ -614,31 +674,9 @@ def _parse_memory_operations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 'new': new,
             })
             continue
-
-        if op_name != 'upsert_day':
-            raise UnprocessableContentError(
-                f"Unsupported memory operation {op_name!r}; expected 'replace_text', 'upsert_day' or 'replace_all'."
-            )
-
-        date = raw_op.get('date')
-        if not isinstance(date, str) or not date.strip():
-            raise UnprocessableContentError("upsert_day requires a non-empty string field 'date'.")
-
-        replace = _normalize_string_list(raw_op.get('replace'), field_name='replace')
-        invalid_keys = [key for key in replace if key not in _MEMORY_SECTION_KEYS]
-        if invalid_keys:
-            raise UnprocessableContentError(
-                f"replace contains unsupported sections: {', '.join(invalid_keys)}."
-            )
-
-        normalized_ops.append({
-            'op': 'upsert_day',
-            'date': date.strip(),
-            'doing': _normalize_string_list(raw_op.get('doing'), field_name='doing'),
-            'discussed': _normalize_string_list(raw_op.get('discussed'), field_name='discussed'),
-            'status': _normalize_string_list(raw_op.get('status'), field_name='status'),
-            'replace': replace,
-        })
+        raise UnprocessableContentError(
+            f"Unsupported memory operation {op_name!r}; expected 'replace_text' or 'replace_all'."
+        )
 
     return normalized_ops
 
@@ -716,43 +754,167 @@ def _render_memory(days: 'OrderedDict[str, Dict[str, List[str]]]') -> str:
     return '\n'.join(lines).strip()
 
 
+def _parse_iso_date(value: str) -> Optional[datetime]:
+    if not _ISO_DATE_RE.match(value.strip()):
+        return None
+    try:
+        return datetime.strptime(value.strip(), '%Y-%m-%d')
+    except ValueError:
+        return None
+
+
+def _trim_text_to_chars(text: str, limit: int) -> str:
+    text = ' '.join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:max(0, limit - 1)].rstrip() + '…'
+
+
+def _memory_day_summary(date: str, sections: Dict[str, List[str]]) -> str:
+    parts: List[str] = []
+    for key in _MEMORY_SECTION_KEYS:
+        values = sections.get(key) or []
+        if values:
+            parts.append(f'{_SECTION_KEY_TO_HEADER[key]}：{"；".join(values)}')
+    if not parts:
+        return ''
+    return f'{date}：{"；".join(parts)}'
+
+
+def _compact_memory_to_recent_week(content: str) -> str:
+    if _compact_len(content) <= _MAX_MANAGED_CONTENT_CHARS:
+        return content.strip()
+
+    days = _parse_existing_memory(content)
+    dated_days = [
+        (day, parsed)
+        for day in days
+        for parsed in [_parse_iso_date(day)]
+        if parsed is not None
+    ]
+    if not dated_days:
+        return content.strip()
+
+    latest_day = max(parsed for _, parsed in dated_days)
+    cutoff = latest_day - timedelta(days=6)
+    older: 'OrderedDict[str, Dict[str, List[str]]]' = OrderedDict()
+    recent: 'OrderedDict[str, Dict[str, List[str]]]' = OrderedDict()
+
+    for day, sections in days.items():
+        parsed = _parse_iso_date(day)
+        if parsed is not None and parsed >= cutoff:
+            recent[day] = sections
+        else:
+            older[day] = sections
+
+    result_days: 'OrderedDict[str, Dict[str, List[str]]]' = OrderedDict()
+    if older:
+        older_summary = '；'.join(
+            summary
+            for day, sections in older.items()
+            for summary in [_memory_day_summary(day, sections)]
+            if summary
+        )
+        recent_text = _render_memory(recent)
+        summary_budget = min(
+            _MAX_OLDER_MEMORY_SUMMARY_CHARS,
+            max(0, _MAX_MANAGED_CONTENT_CHARS - _compact_len(recent_text) - 20),
+        )
+        if older_summary and summary_budget > 0:
+            result_days['一周前摘要'] = _new_day_record()
+            result_days['一周前摘要']['discussed'] = [
+                _trim_text_to_chars(older_summary, summary_budget)
+            ]
+
+    result_days.update(recent)
+    result = _render_memory(result_days)
+    return result or content.strip()
+
+
+def _extract_memory_day_date(block: str) -> Optional[str]:
+    for line in block.strip().splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = re.match(r'^-\s+(\d{4}-\d{2}-\d{2})(?:\s.*)?$', stripped)
+        if match:
+            return match.group(1)
+        return None
+    return None
+
+
+def _find_memory_day_block(content: str, date: str) -> Optional[tuple[int, int]]:
+    lines = content.splitlines(keepends=True)
+    position = 0
+    start: Optional[int] = None
+
+    for line in lines:
+        stripped = line.strip()
+        match = re.match(r'^-\s+(\d{4}-\d{2}-\d{2})(?:\s.*)?$', stripped)
+        if match:
+            if start is not None:
+                return (start, position)
+            if match.group(1) == date:
+                start = position
+        position += len(line)
+
+    if start is not None:
+        return (start, len(content))
+    return None
+
+
+def _insert_or_replace_memory_day_block(content: str, day_block: str) -> str:
+    day_block = day_block.strip()
+    date = _extract_memory_day_date(day_block)
+    if date is None:
+        raise UnprocessableContentError(
+            'replace_text with empty old requires new to be a complete memory day block beginning with "- YYYY-MM-DD".'  # noqa: E501
+        )
+
+    found = _find_memory_day_block(content, date)
+    if found is None:
+        base = content.strip()
+        if not base:
+            return day_block
+        return f'{base}\n{day_block}'
+
+    start, end = found
+    prefix = content[:start].rstrip()
+    suffix = content[end:].lstrip('\n')
+    parts = [part for part in (prefix, day_block, suffix.strip()) if part]
+    return '\n'.join(parts)
+
+
+def _apply_memory_replace_text_operation(current: str, old: str, new: str) -> str:
+    if old == '' and new.strip():
+        return _insert_or_replace_memory_day_block(current, new)
+    if old not in current and _extract_memory_day_date(new):
+        return _insert_or_replace_memory_day_block(current, new)
+    return _apply_replace_text_operation(current, old, new, entity_name='memory')
+
+
 def _apply_memory_edit_operations(current_content: str, payload: Dict[str, Any]) -> str:
     operations = _parse_memory_operations(payload)
     if operations[0]['op'] == 'replace_all':
-        return operations[0]['content']
+        return _compact_memory_to_recent_week(operations[0]['content'])
 
-    current = current_content
-    days: Optional['OrderedDict[str, Dict[str, List[str]]]'] = None
+    current = _compact_memory_to_recent_week(current_content)
     for op in operations:
         if op['op'] == 'replace_text':
-            if days is not None:
-                # Flush pending day-level edits before applying free-form text replacement.
-                current = _render_memory(days)
-            current = _apply_replace_text(current, op['old'], op['new'], entity_name='memory')
-            days = None
-            continue
-
-        if days is None:
-            days = _parse_existing_memory(current)
-        date = op['date']
-        day = days.setdefault(date, _new_day_record())
-        replace = set(op.get('replace') or [])
-        for key in _MEMORY_SECTION_KEYS:
-            new_values = op.get(key) or []
-            if not new_values and key not in replace:
+            if op['old'] == op['new']:
                 continue
-            if key in replace:
-                day[key] = list(new_values)
-            else:
-                day[key] = _append_unique(day.get(key, []), new_values)
+            current = _apply_memory_replace_text_operation(current, op['old'], op['new'])
 
-    if days is None:
-        return current.strip()
-
-    return _render_memory(days)
+    return _compact_memory_to_recent_week(current.strip())
 
 
 def _parse_user_preference_operations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if 'content' in payload and 'operations' not in payload:
+        content = payload.get('content')
+        if not isinstance(content, str):
+            raise UnprocessableContentError("Generated field 'content' must be a string.")
+        return [{'op': 'replace_all', 'content': content.strip()}]
+
     operations = payload.get('operations')
     if not isinstance(operations, list) or not operations:
         raise UnprocessableContentError("Model output for user_preference must contain a non-empty 'operations' array.")
@@ -772,10 +934,14 @@ def _parse_user_preference_operations(payload: Dict[str, Any]) -> List[Dict[str,
         if op_name == 'replace_text':
             old = raw_op.get('old')
             new = raw_op.get('new')
-            if not isinstance(old, str) or not old:
-                raise UnprocessableContentError("replace_text requires a non-empty string field 'old'.")
+            if not isinstance(old, str):
+                raise UnprocessableContentError("replace_text requires a string field 'old'.")
             if not isinstance(new, str):
                 raise UnprocessableContentError("replace_text requires a string field 'new'.")
+            if old == '' and new != '':
+                raise UnprocessableContentError(
+                    "replace_text with an empty 'old' is only allowed when 'new' is also empty."
+                )
             normalized_ops.append({
                 'op': 'replace_text',
                 'old': old,
@@ -796,7 +962,14 @@ def _apply_user_preference_edit_operations(current_content: str, payload: Dict[s
     current = current_content
     for op in operations:
         if op['op'] == 'replace_text':
-            current = _apply_replace_text(current, op['old'], op['new'], entity_name='user_preference')
+            if op['old'] == op['new']:
+                continue
+            current = _apply_replace_text_operation(
+                current,
+                op['old'],
+                op['new'],
+                entity_name='user_preference',
+            )
     return current.strip()
 
 

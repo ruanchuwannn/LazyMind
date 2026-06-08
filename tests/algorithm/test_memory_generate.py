@@ -19,22 +19,22 @@ def _load_memory_generate_module():
     fake_lazyllm = ModuleType('lazyllm')
     fake_lazyllm.AutoModel = lambda *args, **kwargs: object()
 
-    fake_skill_manager = ModuleType('lazymind.chat.engine.tools.skill_manager')
-    fake_skill_manager._validate_skill_content = lambda *_args, **_kwargs: None
+    fake_tool_infra = ModuleType('lazymind.chat.engine.tools.infra')
+    fake_tool_infra.validate_skill_content = lambda *_args, **_kwargs: None
 
     fake_load_config = ModuleType('lazymind.model_config')
     fake_load_config.get_config_path = lambda: ''
 
     original_modules = {
         'lazyllm': sys.modules.get('lazyllm'),
-        'lazymind.chat.engine.tools.skill_manager': sys.modules.get('lazymind.chat.engine.tools.skill_manager'),
+        'lazymind.chat.engine.tools.infra': sys.modules.get('lazymind.chat.engine.tools.infra'),
         'lazymind.model_config': sys.modules.get('lazymind.model_config'),
     }
 
     module = importlib.util.module_from_spec(spec)
     try:
         sys.modules['lazyllm'] = fake_lazyllm
-        sys.modules['lazymind.chat.engine.tools.skill_manager'] = fake_skill_manager
+        sys.modules['lazymind.chat.engine.tools.infra'] = fake_tool_infra
         sys.modules['lazymind.model_config'] = fake_load_config
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
@@ -52,6 +52,7 @@ BadRequestError = memory_generate.BadRequestError
 _apply_memory_edit_operations = memory_generate._apply_memory_edit_operations
 _apply_user_preference_edit_operations = memory_generate._apply_user_preference_edit_operations
 _build_generate_prompt = memory_generate._build_generate_prompt
+_compact_memory_to_recent_week = memory_generate._compact_memory_to_recent_week
 _format_inputs_block = memory_generate._format_inputs_block
 generate_memory_content = memory_generate.generate_memory_content
 
@@ -59,18 +60,28 @@ generate_memory_content = memory_generate.generate_memory_content
 def _load_memory_generate_routes_module():
     module_path = (
         Path(__file__).resolve().parents[2]
-        / 'algorithm/lazymind/chat/service/api/memory_generate_routes.py'
+        / 'algorithm/lazymind/review/api/memory_generate_routes.py'
     )
     spec = importlib.util.spec_from_file_location('test_memory_generate_routes', module_path)
     assert spec is not None
     assert spec.loader is not None
 
+    fake_lazyllm = ModuleType('lazyllm')
+    fake_lazyllm.globals = type('Globals', (), {'_init_sid': lambda self, sid=None: None})()
+    fake_lazyllm.locals = type('Locals', (), {'_init_sid': lambda self, sid=None: None})()
+    fake_model_config = ModuleType('lazymind.model_config')
+    fake_model_config.inject_model_config = lambda *_args, **_kwargs: None
+
     original_modules = {
+        'lazyllm': sys.modules.get('lazyllm'),
+        'lazymind.model_config': sys.modules.get('lazymind.model_config'),
         'lazymind.review.service.memory_generate': sys.modules.get('lazymind.review.service.memory_generate'),
     }
 
     module = importlib.util.module_from_spec(spec)
     try:
+        sys.modules['lazyllm'] = fake_lazyllm
+        sys.modules['lazymind.model_config'] = fake_model_config
         sys.modules['lazymind.review.service.memory_generate'] = memory_generate
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
@@ -84,21 +95,9 @@ def _load_memory_generate_routes_module():
                 sys.modules[name] = original
 
 
-def test_format_inputs_block_includes_only_suggestions_when_user_instruct_missing():
+def test_format_inputs_block_includes_required_user_instruct():
     block = _format_inputs_block(
         content='old content',
-        suggestions=[{'title': 't', 'content': 'c'}],
-        user_instruct=None,
-    )
-
-    assert '2) suggestions' in block
-    assert '3) user_instruct' not in block
-
-
-def test_format_inputs_block_includes_only_user_instruct_when_suggestions_missing():
-    block = _format_inputs_block(
-        content='old content',
-        suggestions=[],
         user_instruct='rewrite this',
     )
 
@@ -106,34 +105,25 @@ def test_format_inputs_block_includes_only_user_instruct_when_suggestions_missin
     assert '2) suggestions' not in block
 
 
-def test_generate_memory_content_requires_suggestions_or_user_instruct():
+def test_generate_memory_content_requires_user_instruct():
     try:
         generate_memory_content(
             memory_type='memory',
             content='old content',
-            suggestions=[],
             user_instruct='  ',
         )
     except BadRequestError as exc:
-        assert "At least one of 'suggestions' or 'user_instruct' must be provided." == str(exc)
+        assert "'user_instruct' must be a non-empty string." == str(exc)
     else:
         raise AssertionError('Expected BadRequestError')
 
 
 def test_generate_prompts_include_stale_content_governance():
-    suggestions = [{
-        'title': 'Update stale memory',
-        'content': 'Replace old KB failure diagnosis with the current service-level cause.',
-        'reason': 'Previous memory is outdated',
-        'outdated': True,
-    }]
-
     for memory_type in ('skill', 'memory', 'user_preference'):
         prompt = _build_generate_prompt(
             memory_type=memory_type,
             content='old content that may now be stale',
-            suggestions=suggestions,
-            user_instruct=None,
+            user_instruct='Outdated=TRUE: replace old KB failure diagnosis with the current service-level cause.',
         )
 
         assert 'bounded, continuously maintained store' in prompt
@@ -142,10 +132,11 @@ def test_generate_prompts_include_stale_content_governance():
         assert 'Even when the limit is not exceeded' in prompt
         assert 'proactively compress, consolidate, or delete stale information' in prompt
         assert 'Current content length after removing whitespace' in prompt
-        assert 'Remaining budget before merging suggestions' in prompt
+        assert 'Remaining budget before applying user_instruct' in prompt
+        assert 'upsert' not in prompt
 
 
-def test_memory_edit_operations_preserve_upsert_day_before_replace_text():
+def test_memory_edit_operations_use_replace_text_to_add_day_and_edit_text():
     current = (
         '- 2026-05-14\n'
         '  用户在做:\n'
@@ -159,9 +150,9 @@ def test_memory_edit_operations_preserve_upsert_day_before_replace_text():
         {
             'operations': [
                 {
-                    'op': 'upsert_day',
-                    'date': '2026-05-15',
-                    'doing': ['new task'],
+                    'op': 'replace_text',
+                    'old': '',
+                    'new': '- 2026-05-15\n  用户在做:\n  - new task',
                 },
                 {
                     'op': 'replace_text',
@@ -184,7 +175,7 @@ def test_memory_edit_operations_preserve_upsert_day_before_replace_text():
     )
 
 
-def test_memory_edit_operations_can_clear_all_memory_via_upsert_replace():
+def test_memory_edit_operations_can_replace_existing_day_block():
     current = (
         '- 2026-05-14\n'
         '  用户在做:\n'
@@ -196,16 +187,42 @@ def test_memory_edit_operations_can_clear_all_memory_via_upsert_replace():
         {
             'operations': [
                 {
-                    'op': 'upsert_day',
-                    'date': '2026-05-14',
-                    'replace': ['doing'],
-                    'doing': [],
+                    'op': 'replace_text',
+                    'old': current,
+                    'new': '- 2026-05-14\n  我们讨论了:\n  - new summary',
                 },
             ],
         },
     )
 
-    assert edited == ''
+    assert edited == '- 2026-05-14\n  我们讨论了:\n  - new summary'
+
+
+def test_memory_compaction_keeps_recent_week_and_summarizes_older_records():
+    older_days = []
+    for day in range(1, 15):
+        older_days.append(
+            f'- 2026-05-{day:02d}\n'
+            '  我们讨论了:\n'
+            f'  - old topic {day} ' + ('detail ' * 20)
+        )
+    recent_days = (
+        '- 2026-05-20\n'
+        '  用户在做:\n'
+        '  - recent task\n'
+        '- 2026-05-21\n'
+        '  状态/冲突:\n'
+        '  - recent status'
+    )
+
+    compacted = _compact_memory_to_recent_week('\n'.join(older_days + [recent_days]))
+
+    assert '一周前摘要' in compacted
+    assert '2026-05-01' in compacted
+    assert '- 2026-05-20' in compacted
+    assert '- 2026-05-21' in compacted
+    summary_line = next(line for line in compacted.splitlines() if '2026-05-01' in line)
+    assert len(summary_line.strip()[2:]) <= 500
 
 
 def test_user_preference_edit_operations_can_clear_all_content_via_replace_all():
@@ -224,20 +241,15 @@ def test_user_preference_edit_operations_can_clear_all_content_via_replace_all()
     assert edited == ''
 
 
-def test_memory_generate_route_accepts_suggestions_without_user_instruct(monkeypatch):
+def test_memory_generate_route_requires_user_instruct_and_llm_config(monkeypatch):
     memory_generate_routes = _load_memory_generate_routes_module()
     app = FastAPI()
     app.include_router(memory_generate_routes.router)
     client = TestClient(app)
 
     def fake_generate_memory_content(**kwargs):
-        assert kwargs['suggestions'] == [{
-            'title': 'Update',
-            'content': 'Apply change',
-            'reason': None,
-            'outdated': None,
-        }]
-        assert kwargs['user_instruct'] is None
+        assert 'suggestions' not in kwargs
+        assert kwargs['user_instruct'] == 'Apply change'
         return 'new content'
 
     monkeypatch.setattr(
@@ -250,7 +262,8 @@ def test_memory_generate_route_accepts_suggestions_without_user_instruct(monkeyp
         '/api/chat/memory/generate',
         json={
             'content': 'old content',
-            'suggestions': [{'title': 'Update', 'content': 'Apply change'}],
+            'user_instruct': 'Apply change',
+            'llm_config': {},
         },
     )
 
@@ -258,7 +271,7 @@ def test_memory_generate_route_accepts_suggestions_without_user_instruct(monkeyp
     assert response.json() == {'content': 'new content'}
 
 
-def test_memory_generate_route_rejects_missing_suggestions_and_user_instruct():
+def test_memory_generate_route_rejects_missing_user_instruct_or_llm_config():
     memory_generate_routes = _load_memory_generate_routes_module()
     app = FastAPI()
     app.include_router(memory_generate_routes.router)
@@ -266,7 +279,14 @@ def test_memory_generate_route_rejects_missing_suggestions_and_user_instruct():
 
     response = client.post(
         '/api/chat/memory/generate',
-        json={'content': 'old content'},
+        json={'content': 'old content', 'llm_config': {}},
+    )
+
+    assert response.status_code == 422
+
+    response = client.post(
+        '/api/chat/memory/generate',
+        json={'content': 'old content', 'user_instruct': 'Apply change'},
     )
 
     assert response.status_code == 422
