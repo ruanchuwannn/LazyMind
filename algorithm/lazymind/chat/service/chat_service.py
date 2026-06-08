@@ -91,7 +91,7 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
                 'sources': [],
             },
             cost,
-        ))
+        ), final_data={'tool_call_turns': 0})
 
     filters = dict(filters or {})
     resolved_files = validate_and_resolve_files(files)
@@ -178,10 +178,18 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
         except Exception as exc:
             LOG.exception(exc)
             final_resp = response_payload(
-                500, f'chat service failed: {exc}', {'status': 'FAILED'}, 0.0
+                500,
+                f'chat service failed: {exc}',
+                {'status': 'FAILED', 'tool_call_turns': translator.tool_call_turns},
+                0.0,
             )
         else:
-            final_resp = response_payload(200, 'success', {'status': 'FINISHED'}, 0.0)
+            final_resp = response_payload(
+                200,
+                'success',
+                {'status': 'FINISHED', 'tool_call_turns': translator.tool_call_turns},
+                0.0,
+            )
 
         cost = round(time.time() - start_time, 3)
         final_resp['cost'] = cost
