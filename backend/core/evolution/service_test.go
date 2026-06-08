@@ -63,8 +63,8 @@ func TestBuildChatResourceContextCreatesPerUserResourcesAndSnapshots(t *testing.
 	if err != nil {
 		t.Fatalf("build chat resource context: %v", err)
 	}
-	if len(ctx.AvailableTools) != 1 || ctx.AvailableTools[0] != "all" {
-		t.Fatalf("unexpected available_tools: %#v", ctx.AvailableTools)
+	if len(ctx.DisabledTools) != 0 {
+		t.Fatalf("unexpected disabled_tools: %#v", ctx.DisabledTools)
 	}
 	if len(ctx.AvailableSkills) != 1 || ctx.AvailableSkills[0] != "coding/git-workflow" {
 		t.Fatalf("unexpected available_skills: %#v", ctx.AvailableSkills)

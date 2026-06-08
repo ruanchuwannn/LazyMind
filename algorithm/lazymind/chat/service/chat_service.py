@@ -60,7 +60,7 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
                       session_id: str, filters: Optional[Dict[str, Any]],
                       files: Optional[List[str]],
                       databases: Optional[List[Dict[str, Any]]],
-                      priority: Optional[int], available_tools: Optional[List[str]],
+                      priority: Optional[int], disabled_tools: Optional[List[str]],
                       available_skills: Optional[List[str]], memory: Optional[str],
                       user_preference: Optional[str], use_memory: Optional[bool],
                       environment_context: Optional[Dict[str, Any]] = None,
@@ -116,7 +116,7 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
     inject_model_config(model_config)
     inject_tool_config(tool_config)
     lazyllm.globals['agentic_config'] = agentic_config
-    active_configs = filter_tools(DEFAULT_TOOLS, available_tools)
+    active_configs = filter_tools(DEFAULT_TOOLS, disabled_tools)
     set_trace_context({
         'enabled': bool(trace),
         'trace_id': session_id if trace else None,

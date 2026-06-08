@@ -215,11 +215,12 @@ def group_is_active(cfg: ToolGroupConfig) -> bool:
 
 def filter_tools(
     configs: list[ToolGroupConfig],
-    available_tools: list[str] | None = None,
+    disabled_tools: list[str] | None = None,
 ) -> list[ToolGroupConfig]:
+    disabled = set(disabled_tools or [])
     result = []
     for cfg in configs:
-        if available_tools is not None and cfg.name not in available_tools:
+        if cfg.name in disabled:
             continue
         if not group_is_active(cfg):
             continue
