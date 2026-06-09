@@ -9,7 +9,7 @@ import requests
 from lazyllm.tools.agent.skill_manager import SkillManager as LazySkillManager
 from lazyllm.tools.fs.client import FS
 
-from lazymind.chat.engine.tools.skill_manager import list_all_skill_entries
+from lazymind.chat.engine.tools.skill_editor import list_all_skill_entries
 from lazymind.chat.integrations.remote_fs import RemoteFS
 from lazymind.config import config as algo_config
 

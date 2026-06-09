@@ -66,6 +66,39 @@ func TestFullStrategyUsesBFSListChildrenFallback(t *testing.T) {
 	}
 }
 
+func TestFullStrategyFetchesDualRoleRootBeforeBFSChildren(t *testing.T) {
+	t.Parallel()
+
+	strategy := NewFullCrawlStrategy(strategyInput{
+		binding: strategyBinding(),
+		spec: connector.ConnectorSpec{
+			SupportsRecursiveFetch: false,
+			SupportsDualRoleObject: true,
+		},
+		claim:    strategyClaim(connector.ScopeTypeFull, nil),
+		pageSize: 10,
+	})
+
+	req, done, err := strategy.NextRequest(context.Background(), CrawlLoopState{})
+	if err != nil || done {
+		t.Fatalf("first next request done=%v err=%v", done, err)
+	}
+	if req.Kind != CrawlRequestKindFetch || req.Fetch.ScopeType != connector.ScopeTypeWatchEvent {
+		t.Fatalf("expected dual-role root fetch, got %+v", req)
+	}
+	if err := strategy.ObservePage(context.Background(), connector.RawObjectPage{Items: []connector.RawObject{{ObjectKey: "root", IsDocument: true}}}); err != nil {
+		t.Fatalf("observe root fetch: %v", err)
+	}
+
+	req, done, err = strategy.NextRequest(context.Background(), CrawlLoopState{})
+	if err != nil || done {
+		t.Fatalf("second next request done=%v err=%v", done, err)
+	}
+	if req.Kind != CrawlRequestKindListChildren || req.ListChildren.NodeRef != "" {
+		t.Fatalf("expected root children list after root fetch, got %+v", req)
+	}
+}
+
 func TestPartialStrategyCoversDeclaredSubtreeOnly(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +121,31 @@ func TestPartialStrategyCoversDeclaredSubtreeOnly(t *testing.T) {
 	coverage := strategy.Coverage()
 	if !coverage.Complete || coverage.CoveredTargetRoot || len(coverage.CoveredSubtrees) != 1 || coverage.CoveredSubtrees[0] != "folder-1" {
 		t.Fatalf("unexpected partial coverage: %+v", coverage)
+	}
+}
+
+func TestPartialStrategyFetchesSelectedPath(t *testing.T) {
+	t.Parallel()
+
+	strategy := NewPartialCrawlStrategy(strategyInput{
+		binding:  strategyBinding(),
+		spec:     connector.ConnectorSpec{SupportsRecursiveFetch: false},
+		claim:    strategyClaim(connector.ScopeTypePartial, connector.ScopeRef{"path": "/workspace/docs/111.txt"}),
+		pageSize: 10,
+	})
+	req, done, err := strategy.NextRequest(context.Background(), CrawlLoopState{})
+	if err != nil || done {
+		t.Fatalf("next request done=%v err=%v", done, err)
+	}
+	if req.Kind != CrawlRequestKindFetch || req.Fetch.ScopeRef["path"] != "/workspace/docs/111.txt" {
+		t.Fatalf("expected selected path fetch request, got %+v", req)
+	}
+	if err := strategy.ObservePage(context.Background(), connector.RawObjectPage{Items: []connector.RawObject{{ObjectKey: "doc-1"}}}); err != nil {
+		t.Fatalf("observe selected path page: %v", err)
+	}
+	coverage := strategy.Coverage()
+	if !coverage.Complete || len(coverage.CoveredObjectKeys) != 1 || coverage.CoveredObjectKeys[0] != "doc-1" {
+		t.Fatalf("unexpected selected path coverage: %+v", coverage)
 	}
 }
 

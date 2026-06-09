@@ -6,7 +6,14 @@ from typing import Any
 
 import docstring_parser
 from lazyllm.tools.fs.supplier.feishu import FeishuFS
-from lazyllm.tools.tools.search import ArxivSearch, BingSearch, BochaSearch, GoogleSearch, WikipediaSearch
+from lazyllm.tools.tools.search import (
+    ArxivSearch,
+    BingSearch,
+    BochaSearch,
+    GoogleSearch,
+    SciverseSearch,
+    WikipediaSearch,
+)
 
 from lazymind.chat.engine.tools import (
     KBToolGroup,
@@ -34,6 +41,27 @@ SKILL_TOOL_GROUP = ToolGroupConfig(
     description='利用已安装的技能进行查询、读文件、执行脚本',
     instance=None,
 )
+
+_ALWAYS_ACTIVE_TOOL_GROUPS = {
+    'kb',
+    'temp_kb',
+    'calculator',
+    'wikipedia',
+    'arxiv',
+    'url_fetch',
+    'multimodal',
+    'vocab_learn',
+    'memory_editor',
+    'skill_editor',
+}
+
+_CONFIG_CHECK_TOOL_GROUPS = {
+    'sciverse',
+    'google',
+    'bing',
+    'bocha',
+    'feishu',
+}
 
 
 DEFAULT_TOOLS: list[ToolGroupConfig] = [
@@ -66,6 +94,12 @@ DEFAULT_TOOLS: list[ToolGroupConfig] = [
         label='Arxiv 论文搜索',
         description='从 Arxiv 搜索学术论文',
         instance=ArxivSearch(skip_auth=True),
+    ),
+    ToolGroupConfig(
+        name='sciverse',
+        label='Sciverse 论文搜索',
+        description='从 Sciverse 搜索科研论文、元数据和文献片段',
+        instance=SciverseSearch(),
     ),
     ToolGroupConfig(
         name='google',
@@ -167,6 +201,14 @@ _SKILL_METHODS = [
 ]
 
 
+def _tool_group_active_for_listing(cfg: ToolGroupConfig) -> bool:
+    if cfg.name in _ALWAYS_ACTIVE_TOOL_GROUPS:
+        return True
+    if cfg.name in _CONFIG_CHECK_TOOL_GROUPS:
+        return group_is_active(cfg)
+    return True
+
+
 def get_all_tool_groups() -> list[dict]:
     result = []
     for cfg in DEFAULT_TOOLS:
@@ -177,6 +219,7 @@ def get_all_tool_groups() -> list[dict]:
             'description': cfg.description,
             'methods': methods,
             'can_disable': True,
+            'active': _tool_group_active_for_listing(cfg),
         })
     result.append({
         'name': SKILL_TOOL_GROUP.name,
@@ -184,6 +227,7 @@ def get_all_tool_groups() -> list[dict]:
         'description': SKILL_TOOL_GROUP.description,
         'methods': _SKILL_METHODS,
         'can_disable': False,
+        'active': True,
     })
     return result
 
@@ -200,11 +244,12 @@ def group_is_active(cfg: ToolGroupConfig) -> bool:
 
 def filter_tools(
     configs: list[ToolGroupConfig],
-    available_tools: list[str] | None = None,
+    disabled_tools: list[str] | None = None,
 ) -> list[ToolGroupConfig]:
+    disabled = set(disabled_tools or [])
     result = []
     for cfg in configs:
-        if available_tools is not None and cfg.name not in available_tools:
+        if cfg.name in disabled:
             continue
         if not group_is_active(cfg):
             continue

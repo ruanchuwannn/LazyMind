@@ -2,7 +2,7 @@ import sys
 from types import ModuleType
 
 import lazymind.chat.engine.tools.memory_editor as memory_mod
-from lazymind.chat.engine.tools import skill_manager as skill_manager_mod
+from lazymind.chat.engine.tools import skill_editor as skill_editor_mod
 from lazymind.chat.engine.tools.infra.suggestion import Suggestion
 
 
@@ -12,16 +12,20 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
     class FakeUnprocessableContentError(ValueError):
         pass
 
-    fake_memory_generate = ModuleType('lazymind.review.service.memory_generate')
-    fake_memory_generate.UnprocessableContentError = FakeUnprocessableContentError
-    fake_memory_generate._apply_memory_edit_operations = (
-        lambda current, payload: current.replace('old', payload['operations'][0]['new'])
-    )
-    fake_memory_generate._apply_user_preference_edit_operations = (
-        lambda current, payload: current.replace('old', payload['operations'][0]['new'])
-    )
-    fake_memory_generate._validate_generated_content = (
+    fake_rewrite_pkg = ModuleType('lazymind.rewrite')
+    fake_rewrite_pkg.__path__ = []
+    fake_rewrite_base = ModuleType('lazymind.rewrite.base')
+    fake_rewrite_base.UnprocessableContentError = FakeUnprocessableContentError
+    fake_rewrite_base._validate_generated_content = (
         lambda memory_type, content: content
+    )
+    fake_rewrite_memory = ModuleType('lazymind.rewrite.memory')
+    fake_rewrite_memory._apply_memory_edit_operations = (
+        lambda current, payload: current.replace('old', payload['operations'][0]['new'])
+    )
+    fake_rewrite_preference = ModuleType('lazymind.rewrite.preference')
+    fake_rewrite_preference._apply_user_preference_edit_operations = (
+        lambda current, payload: current.replace('old', payload['operations'][0]['new'])
     )
 
     records = []
@@ -35,9 +39,16 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        'lazymind.review.service.memory_generate',
-        fake_memory_generate,
+        'lazymind.rewrite',
+        fake_rewrite_pkg,
     )
+    monkeypatch.setitem(
+        sys.modules,
+        'lazymind.rewrite.base',
+        fake_rewrite_base,
+    )
+    monkeypatch.setitem(sys.modules, 'lazymind.rewrite.memory', fake_rewrite_memory)
+    monkeypatch.setitem(sys.modules, 'lazymind.rewrite.preference', fake_rewrite_preference)
     monkeypatch.setitem(sys.modules, 'lazymind.review.memory.db', fake_memory_db)
     monkeypatch.setattr(
         memory_mod.lazyllm,
@@ -87,10 +98,10 @@ def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
         calls.append((path, payload))
         return {'persisted': 'core_api', 'url': f'http://core{path}'}
 
-    monkeypatch.setattr(skill_manager_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
-    monkeypatch.setattr(skill_manager_mod, 'post_core_api', fake_post_core_api)
+    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
+    monkeypatch.setattr(skill_editor_mod, 'post_core_api', fake_post_core_api)
     monkeypatch.setattr(
-        skill_manager_mod,
+        skill_editor_mod,
         'list_all_skill_entries',
         lambda _base_dir: {
             'writing/existing': {
@@ -111,19 +122,19 @@ def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
     )
     suggestion = Suggestion(title='Update instructions', content='Tighten the wording.')
 
-    create_result = skill_manager_mod.skill_editor(
+    create_result = skill_editor_mod.skill_editor(
         'new_skill',
         'create',
         category='drafts',
         content=content,
     )
-    modify_result = skill_manager_mod.skill_editor(
+    modify_result = skill_editor_mod.skill_editor(
         'existing',
         'modify',
         category='writing',
         suggestions=[suggestion],
     )
-    remove_result = skill_manager_mod.skill_editor('existing', 'remove', category='writing')
+    remove_result = skill_editor_mod.skill_editor('existing', 'remove', category='writing')
 
     assert create_result['success'] is True
     assert create_result['tool'] == 'skill_editor'
@@ -160,11 +171,11 @@ def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
 def test_skill_editor_rejects_missing_skill_without_post(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(skill_manager_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
-    monkeypatch.setattr(skill_manager_mod, 'post_core_api', lambda path, payload: calls.append((path, payload)))
-    monkeypatch.setattr(skill_manager_mod, 'list_all_skill_entries', lambda _base_dir: {})
+    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
+    monkeypatch.setattr(skill_editor_mod, 'post_core_api', lambda path, payload: calls.append((path, payload)))
+    monkeypatch.setattr(skill_editor_mod, 'list_all_skill_entries', lambda _base_dir: {})
 
-    result = skill_manager_mod.skill_editor(
+    result = skill_editor_mod.skill_editor(
         'missing',
         'modify',
         category='writing',

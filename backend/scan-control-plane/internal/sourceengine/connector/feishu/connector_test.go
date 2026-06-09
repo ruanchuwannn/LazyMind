@@ -115,6 +115,75 @@ func TestDriveListFetchExportAndStableIDDedupe(t *testing.T) {
 	}
 }
 
+func TestDriveDocumentExportUsesRawContent(t *testing.T) {
+	t.Parallel()
+
+	auth := &authStub{}
+	api := newFeishuAPIStub()
+	doc := Object{
+		Kind:          ObjectKindDriveFile,
+		Token:         "docx-a",
+		ParentToken:   "folder-root",
+		Name:          "perm_1",
+		IsDocument:    true,
+		Revision:      "rev-docx-a",
+		FileExtension: ".docx",
+		DriveType:     "docx",
+		StableID:      "docx-a",
+	}
+	api.driveObjects["docx-a"] = doc
+	api.driveChildren["folder-root"] = append(api.driveChildren["folder-root"], doc)
+	conn := NewFeishuConnector(auth, api)
+	temp := &feishuTempStoreStub{}
+	conn.UseTempObjectStore(temp)
+	ctx := context.Background()
+
+	children, err := conn.ListChildren(ctx, connector.ListChildrenRequest{
+		TargetType:       TargetTypeDriveFolder,
+		TargetRef:        "folder-root",
+		ListMode:         connector.ListModeAllCurrentLevel,
+		PageSize:         10,
+		MaxItems:         10,
+		AuthConnectionID: "auth-1",
+	})
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	var raw connector.RawObject
+	for _, item := range children.Items {
+		if item.ObjectKey == "feishu:drive:docx-a" {
+			raw = item
+			break
+		}
+	}
+	if raw.ObjectKey == "" {
+		t.Fatalf("expected drive doc in children, got %+v", children.Items)
+	}
+	normalized, err := conn.MapObject(ctx, raw)
+	if err != nil {
+		t.Fatalf("map object: %v", err)
+	}
+	if normalized.FileExtension != ".md" || normalized.MimeType != "text/markdown" {
+		t.Fatalf("drive cloud document should be exposed as markdown, got ext=%q mime=%q", normalized.FileExtension, normalized.MimeType)
+	}
+
+	exported, err := conn.ExportObject(ctx, connector.ExportObjectRequest{
+		ObjectKey:     normalized.ObjectKey,
+		SourceVersion: normalized.SourceVersion,
+		ExportFormat:  connector.ExportFormatOriginal,
+		ProviderMeta:  normalized.ProviderMeta,
+	})
+	if err != nil {
+		t.Fatalf("export object: %v", err)
+	}
+	if exported.ContentURI != "scan-temp://feishu-1" || temp.objects["feishu-1"] != "drive-doc:docx-a" {
+		t.Fatalf("unexpected exported drive doc: %+v temp=%+v", exported, temp.objects)
+	}
+	if api.downloadCalls != 0 || api.driveExportCalls != 1 {
+		t.Fatalf("expected drive document raw export only, download=%d export=%d", api.downloadCalls, api.driveExportCalls)
+	}
+}
+
 func TestInitialRootsReturnDriveAndWikiVirtualBranches(t *testing.T) {
 	t.Parallel()
 
@@ -222,6 +291,89 @@ func TestWikiFetchAndMarkdownExport(t *testing.T) {
 	if exported.ContentURI != "scan-temp://feishu-1" || exported.MimeType != "text/markdown" || temp.objects["feishu-1"] != "wiki:node-child" {
 		t.Fatalf("unexpected wiki export: %+v", exported)
 	}
+
+	exportedOriginal, err := conn.ExportObject(ctx, connector.ExportObjectRequest{
+		ObjectKey:     normalized.ObjectKey,
+		SourceVersion: normalized.SourceVersion,
+		ExportFormat:  connector.ExportFormatOriginal,
+		ProviderMeta:  normalized.ProviderMeta,
+	})
+	if err != nil {
+		t.Fatalf("export wiki original should use markdown export: %v", err)
+	}
+	if exportedOriginal.ContentURI != "scan-temp://feishu-2" || exportedOriginal.MimeType != "text/markdown" || temp.objects["feishu-2"] != "wiki:node-child" {
+		t.Fatalf("unexpected wiki original export: %+v", exportedOriginal)
+	}
+}
+
+func TestWikiPartialFetchWithObjectKeyReturnsSelectedNode(t *testing.T) {
+	t.Parallel()
+
+	conn := NewFeishuConnector(&authStub{}, newFeishuAPIStub())
+	page, err := conn.FetchPage(context.Background(), connector.FetchPageRequest{
+		SourceID:          "source-1",
+		BindingID:         "binding-1",
+		BindingGeneration: 1,
+		TargetType:        TargetTypeWikiNode,
+		TargetRef:         "space-1:node-root",
+		ScopeType:         connector.ScopeTypePartial,
+		ScopeRef:          connector.ScopeRef{"object_key": "feishu:wiki:space-1:node-root"},
+		PageSize:          10,
+		AuthConnectionID:  "auth-1",
+	})
+	if err != nil {
+		t.Fatalf("partial fetch wiki object: %v", err)
+	}
+	if got := feishuObjectKeys(page.Items); !sameStrings(got, []string{"feishu:wiki:space-1:node-root"}) {
+		t.Fatalf("partial object fetch should return selected wiki node, got %v", got)
+	}
+}
+
+func TestWikiListClampsProviderPageSizeToOpenAPILimit(t *testing.T) {
+	t.Parallel()
+
+	api := newFeishuAPIStub()
+	conn := NewFeishuConnector(&authStub{}, api)
+	_, err := conn.ListChildren(context.Background(), connector.ListChildrenRequest{
+		TargetType:       TargetTypeWikiNode,
+		TargetRef:        "space-1:node-root",
+		PageSize:         100,
+		AuthConnectionID: "auth-1",
+	})
+	if err != nil {
+		t.Fatalf("list wiki children: %v", err)
+	}
+	if len(api.wikiPageSizes) != 1 || api.wikiPageSizes[0] != 50 {
+		t.Fatalf("wiki list should clamp provider page_size to 50, got %v", api.wikiPageSizes)
+	}
+
+	_, err = conn.ListChildren(context.Background(), connector.ListChildrenRequest{
+		TargetType:       TargetTypeDriveFolder,
+		TargetRef:        "folder-root",
+		PageSize:         100,
+		AuthConnectionID: "auth-1",
+	})
+	if err != nil {
+		t.Fatalf("list drive children: %v", err)
+	}
+	if len(api.drivePageSizes) != 1 || api.drivePageSizes[0] != 100 {
+		t.Fatalf("drive list should keep provider page_size, got %v", api.drivePageSizes)
+	}
+
+	_, err = conn.FetchPage(context.Background(), connector.FetchPageRequest{
+		BindingGeneration: 1,
+		TargetType:        TargetTypeWikiNode,
+		TargetRef:         "space-1:node-root",
+		ScopeType:         connector.ScopeTypeFull,
+		PageSize:          100,
+		AuthConnectionID:  "auth-1",
+	})
+	if err != nil {
+		t.Fatalf("fetch wiki children: %v", err)
+	}
+	if len(api.wikiPageSizes) != 2 || api.wikiPageSizes[1] != 50 {
+		t.Fatalf("wiki fetch should clamp provider page_size to 50, got %v", api.wikiPageSizes)
+	}
 }
 
 func TestSearchReturnsUnsupportedForUnimplementedScopeAndDeltaUnsupported(t *testing.T) {
@@ -290,8 +442,11 @@ type feishuAPIStub struct {
 	driveChildren    map[string][]Object
 	wikiChildren     map[string][]Object
 	wikiSpaces       []Object
+	drivePageSizes   []int
+	wikiPageSizes    []int
 	driveFolderCalls int
 	downloadCalls    int
+	driveExportCalls int
 }
 
 func newFeishuAPIStub() *feishuAPIStub {
@@ -334,6 +489,7 @@ func (a *feishuAPIStub) GetDriveFolder(context.Context, string, string) (Object,
 }
 
 func (a *feishuAPIStub) ListDriveChildren(_ context.Context, _ string, folderToken, cursor string, pageSize int) (ObjectPage, error) {
+	a.drivePageSizes = append(a.drivePageSizes, pageSize)
 	return objectPage(a.driveChildren[driveFolderToken(folderToken)], cursor, pageSize)
 }
 
@@ -346,7 +502,17 @@ func (a *feishuAPIStub) DownloadDriveFile(_ context.Context, _ string, fileToken
 	return ExportedContent{Reader: strings.NewReader("drive:" + fileToken), MimeType: object.MimeType, FileExtension: object.FileExtension, SizeBytes: object.SizeBytes, ExportedVersion: expectedVersion}, nil
 }
 
+func (a *feishuAPIStub) ExportDriveDocumentMarkdown(_ context.Context, _ string, docToken, expectedVersion string) (ExportedContent, error) {
+	a.driveExportCalls++
+	object := a.driveObjects[docToken]
+	if versionFor(object) != expectedVersion {
+		return ExportedContent{}, connector.NewError(connector.ErrorCodeVersionMismatch, "version mismatch")
+	}
+	return ExportedContent{Content: []byte("drive-doc:" + docToken), MimeType: "text/markdown", FileExtension: ".md", SizeBytes: 16, ExportedVersion: expectedVersion}, nil
+}
+
 func (a *feishuAPIStub) ListWikiSpaces(_ context.Context, _ string, cursor string, pageSize int) (ObjectPage, error) {
+	a.wikiPageSizes = append(a.wikiPageSizes, pageSize)
 	return objectPage(a.wikiSpaces, cursor, pageSize)
 }
 
@@ -355,6 +521,7 @@ func (a *feishuAPIStub) GetWikiNode(_ context.Context, _ string, spaceID, nodeTo
 }
 
 func (a *feishuAPIStub) ListWikiChildren(_ context.Context, _ string, spaceID, nodeToken, cursor string, pageSize int) (ObjectPage, error) {
+	a.wikiPageSizes = append(a.wikiPageSizes, pageSize)
 	return objectPage(a.wikiChildren[spaceID+":"+nodeToken], cursor, pageSize)
 }
 

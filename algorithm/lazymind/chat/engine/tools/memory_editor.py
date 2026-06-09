@@ -59,6 +59,12 @@ def memory_editor(
               conflict resolution, or broader reorganization.
     """
     raw_target = str(target).strip()
+    if raw_target not in {'memory', 'user'}:
+        return tool_error(
+            'memory_editor',
+            f"Unknown target {raw_target!r}; expected one of 'memory', 'user'."
+        )
+
     agentic_config = lazyllm.globals['agentic_config']
     session_id = str(agentic_config['session_id']).strip()
     storage_target = 'user_preference' if raw_target == 'user' else raw_target
@@ -76,12 +82,12 @@ def memory_editor(
             or ''
         )
     operation_payload = [dict(op) for op in operations]
-    from lazymind.review.service.memory_generate import (
+    from lazymind.rewrite.base import (
         UnprocessableContentError,
-        _apply_memory_edit_operations,
-        _apply_user_preference_edit_operations,
         _validate_generated_content,
     )
+    from lazymind.rewrite.memory import _apply_memory_edit_operations
+    from lazymind.rewrite.preference import _apply_user_preference_edit_operations
 
     try:
         apply_operations = (

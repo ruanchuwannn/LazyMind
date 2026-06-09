@@ -14,11 +14,14 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { AgentAppsAuth } from "@/components/auth";
+import { getLocalizedErrorMessage } from "@/components/request";
+import { useModelFeatures } from "@/hooks/useModelFeatures";
 import {
-  BASE_URL,
-  axiosInstance,
-  getLocalizedErrorMessage,
-} from "@/components/request";
+  modelProvidersApi,
+  modelProvidersDefaultApi,
+  unwrapModelProviderData,
+  withModelProviderJsonOptions,
+} from "../api";
 
 type ModelCapability =
   | "llm"
@@ -71,12 +74,6 @@ interface ModuleConfig {
   restricted?: boolean;
 }
 
-interface ApiEnvelope<T> {
-  code?: number;
-  message?: string;
-  data?: T;
-}
-
 interface ApiProvider {
   id: string;
   name: string;
@@ -95,7 +92,7 @@ interface SelectedModelApiItem {
   base_url?: string;
   group_name: string;
   model_id: string;
-  model_type: string;
+  model_key: string;
   name: string;
   provider_name: string;
   share?: boolean;
@@ -149,6 +146,11 @@ interface VerifiedCloudServiceGroup {
 interface VerifiedCloudServiceResponse {
   groups?: VerifiedCloudServiceGroup[];
   ready: boolean;
+  source?: string;
+  shared_by_name?: string;
+  shared_by_id?: string;
+  provider_name?: string;
+  group_name?: string;
 }
 
 interface CloudServiceGroupListResponse {
@@ -164,6 +166,20 @@ interface SelectedCloudServiceApiItem {
   share?: boolean;
   user_model_provider_id: string;
 }
+
+interface ModelReadyResponse {
+  ready: boolean;
+  source?: string;
+  shared_by_name?: string;
+  shared_by_id?: string;
+  provider_name?: string;
+  model_name?: string;
+}
+
+type ModelReadyStatus = Partial<Record<ModelCapability, ModelReadyResponse>>;
+type CloudServiceReadyStatus = Partial<
+  Record<CloudServiceSlotKey, VerifiedCloudServiceResponse>
+>;
 
 const moduleConfigs: ModuleConfig[] = [
   {
@@ -308,38 +324,6 @@ function getCapabilityByModelType(
   return moduleConfigs.find((module) => module.key === normalized)?.key;
 }
 
-function getApiBaseUrl() {
-  return `${BASE_URL || window.location.origin}/api/core`;
-}
-
-function getRequestHeaders() {
-  return {
-    "Content-Type": "application/json",
-    ...AgentAppsAuth.getAuthHeaders(),
-  };
-}
-
-function unwrapResponse<T>(payload: ApiEnvelope<T> | T): T {
-  if (payload && typeof payload === "object" && "data" in payload) {
-    return (payload as ApiEnvelope<T>).data as T;
-  }
-  return payload as T;
-}
-
-async function modelProviderRequest<T>(
-  method: "GET" | "PUT",
-  path: string,
-  data?: unknown,
-) {
-  const response = await axiosInstance.request<ApiEnvelope<T> | T>({
-    method,
-    url: `${getApiBaseUrl()}${path}`,
-    data,
-    headers: getRequestHeaders(),
-  });
-  return unwrapResponse<T>(response.data);
-}
-
 const createModelProviderFallbacks = (
   t: ReturnType<typeof useTranslation>["t"],
 ) => ({
@@ -458,6 +442,56 @@ function mergeCloudServiceOptions(
   return [nextOption, ...options];
 }
 
+function getModelReadyTooltip(
+  t: ReturnType<typeof useTranslation>["t"],
+  readyStatus?: ModelReadyResponse,
+) {
+  if (!readyStatus) {
+    return undefined;
+  }
+  if (!readyStatus.ready) {
+    return t("modelProvider.modelNotReadyTip");
+  }
+  if (
+    readyStatus.source === "shared" &&
+    readyStatus.shared_by_name &&
+    readyStatus.provider_name &&
+    readyStatus.model_name
+  ) {
+    return t("modelProvider.modelReadySharedTip", {
+      user: readyStatus.shared_by_name,
+      provider: readyStatus.provider_name,
+      model: readyStatus.model_name,
+    });
+  }
+  return t("modelProvider.modelReadyTip");
+}
+
+function getCloudServiceReadyTooltip(
+  t: ReturnType<typeof useTranslation>["t"],
+  readyStatus?: VerifiedCloudServiceResponse,
+) {
+  if (!readyStatus) {
+    return undefined;
+  }
+  if (!readyStatus.ready) {
+    return t("modelProvider.cloudServiceNotReadyTip");
+  }
+  if (
+    readyStatus.source === "shared" &&
+    readyStatus.shared_by_name &&
+    readyStatus.provider_name &&
+    readyStatus.group_name
+  ) {
+    return t("modelProvider.cloudServiceReadySharedTip", {
+      user: readyStatus.shared_by_name,
+      provider: readyStatus.provider_name,
+      group: readyStatus.group_name,
+    });
+  }
+  return t("modelProvider.cloudServiceReadyTip");
+}
+
 function ProviderLogo({
   provider,
   compact = false,
@@ -500,23 +534,38 @@ export default function DefaultModelConfigPanel() {
   const [cloudServiceLoading, setCloudServiceLoading] = useState<
     Partial<Record<CloudServiceSlotKey, boolean>>
   >({});
-  const [cloudServiceReadyStatus, setCloudServiceReadyStatus] = useState<
-    Partial<Record<CloudServiceSlotKey, boolean | null>>
+  const [cloudServiceSearchKeywords, setCloudServiceSearchKeywords] = useState<
+    Partial<Record<CloudServiceSlotKey, string>>
   >({});
+  const [cloudServiceReadyStatus, setCloudServiceReadyStatus] =
+    useState<CloudServiceReadyStatus>({});
   const [moduleModelOptions, setModuleModelOptions] = useState<
     Partial<Record<ModelCapability, ModelOptionItem[]>>
   >({});
   const [moduleModelLoading, setModuleModelLoading] = useState<
     Partial<Record<ModelCapability, boolean>>
   >({});
+  const [moduleModelSearchKeywords, setModuleModelSearchKeywords] = useState<
+    Partial<Record<ModelCapability, string>>
+  >({});
   const [shareStatus, setShareStatus] = useState<
     Partial<Record<ModelCapability, boolean>>
   >({});
-  const [modelReadyStatus, setModelReadyStatus] = useState<
-    Partial<Record<ModelCapability, boolean | null>>
-  >({});
+  const [modelReadyStatus, setModelReadyStatus] = useState<ModelReadyStatus>(
+    {},
+  );
   const isAdmin = AgentAppsAuth.getUserInfo()?.role === "system-admin";
-  const visibleModuleConfigs = moduleConfigs;
+  const modelFeaturesState = useModelFeatures();
+  const imageEmbedEnabled =
+    modelFeaturesState.status !== "ready" ||
+    modelFeaturesState.features.image_embed_enabled;
+  const visibleModuleConfigs = useMemo(
+    () =>
+      moduleConfigs.filter(
+        (module) => module.key !== "embed_image" || imageEmbedEnabled,
+      ),
+    [imageEmbedEnabled],
+  );
   const localizedFallbacks = useMemo(
     () => createModelProviderFallbacks(t),
     [i18n.language, t],
@@ -524,17 +573,15 @@ export default function DefaultModelConfigPanel() {
 
   const loadDefaultModelState = useCallback(async () => {
     try {
-      const providerData = await modelProviderRequest<{
-        providers?: ApiProvider[];
-      }>("GET", "/model_providers");
+      const providerResponse = await modelProvidersApi.apiCoreModelProvidersGet();
+      const providerData = unwrapModelProviderData<{ providers?: ApiProvider[] }>(providerResponse.data);
       const providers = (providerData.providers || []).map((provider) =>
         mapApiProvider(provider, localizedFallbacks),
       );
       setProviderOptions(providers);
 
-      const selectedData = await modelProviderRequest<{
-        selections?: SelectedModelApiItem[];
-      }>("GET", "/model_providers/selected_models");
+      const selectedResponse = await modelProvidersApi.apiCoreModelProvidersSelectedModelsGet();
+      const selectedData = unwrapModelProviderData<{ selections?: SelectedModelApiItem[] }>(selectedResponse.data);
       const nextSelectedModels: SelectedModels = {};
       const selectedOptions: Partial<
         Record<ModelCapability, ModelOptionItem[]>
@@ -596,9 +643,10 @@ export default function DefaultModelConfigPanel() {
       });
       setShareStatus(nextShareStatus);
 
-      const selectedProviderData = await modelProviderRequest<{
-        selections?: SelectedCloudServiceApiItem[];
-      }>("GET", "/model_providers/selected_providers");
+      const selectedProviderResponse = await modelProvidersApi.apiCoreModelProvidersSelectedProvidersGet();
+      const selectedProviderData = unwrapModelProviderData<{ selections?: SelectedCloudServiceApiItem[] }>(
+        selectedProviderResponse.data as unknown,
+      );
       const nextSelectedCloudServices: SelectedCloudServices = {};
       const nextCloudShareStatus: Partial<
         Record<CloudServiceSlotKey, boolean>
@@ -640,43 +688,42 @@ export default function DefaultModelConfigPanel() {
         const [modelReadyResults, cloudReadyResults] = await Promise.all([
           Promise.allSettled(
             moduleConfigs.map(async (module) => {
-              const response = await modelProviderRequest<{
-                ready: boolean;
-                source?: string;
-              }>(
-                "GET",
-                `/model_providers/models/ready?model_type=${encodeURIComponent(module.key)}`,
+              const response = await modelProvidersDefaultApi.apiCoreModelProvidersModelsReadyGet(
+                withModelProviderJsonOptions({
+                  params: { model_type: module.key },
+                }),
               );
-              return { capability: module.key, ready: response.ready };
+              return {
+                capability: module.key,
+                response: unwrapModelProviderData<ModelReadyResponse>(response.data as unknown),
+              };
             }),
           ),
           Promise.allSettled(
             cloudServiceConfigs.map(async (service) => {
               const response =
-                await modelProviderRequest<VerifiedCloudServiceResponse>(
-                  "GET",
-                  `/model_providers/verified?category=${encodeURIComponent(service.category)}`,
-                );
-              return { service: service.key, ready: response.ready };
+                await modelProvidersApi.apiCoreModelProvidersVerifiedGet({
+                  category: service.category,
+                });
+              return {
+                service: service.key,
+                response: unwrapModelProviderData<VerifiedCloudServiceResponse>(response.data),
+              };
             }),
           ),
         ]);
-        const nextReadyStatus: Partial<
-          Record<ModelCapability, boolean | null>
-        > = {};
+        const nextReadyStatus: ModelReadyStatus = {};
         modelReadyResults.forEach((result) => {
           if (result.status === "fulfilled") {
-            nextReadyStatus[result.value.capability] = result.value.ready;
+            nextReadyStatus[result.value.capability] = result.value.response;
           }
         });
         setModelReadyStatus(nextReadyStatus);
 
-        const nextCloudReadyStatus: Partial<
-          Record<CloudServiceSlotKey, boolean | null>
-        > = {};
+        const nextCloudReadyStatus: CloudServiceReadyStatus = {};
         cloudReadyResults.forEach((result) => {
           if (result.status === "fulfilled") {
-            nextCloudReadyStatus[result.value.service] = result.value.ready;
+            nextCloudReadyStatus[result.value.service] = result.value.response;
           }
         });
         setCloudServiceReadyStatus(nextCloudReadyStatus);
@@ -698,8 +745,10 @@ export default function DefaultModelConfigPanel() {
   const loadModuleModels = async (
     capability: ModelCapability,
     force = false,
+    keyword = "",
   ) => {
-    if (!force && moduleModelOptions[capability]) {
+    const trimmedKeyword = keyword.trim();
+    if (!force && trimmedKeyword === "" && moduleModelOptions[capability]) {
       return;
     }
     if (moduleModelLoading[capability]) {
@@ -708,7 +757,10 @@ export default function DefaultModelConfigPanel() {
 
     setModuleModelLoading((current) => ({ ...current, [capability]: true }));
     try {
-      const data = await modelProviderRequest<{
+      const response = await modelProvidersApi.apiCoreModelProvidersModelsGet({
+        modelType: capability,
+      });
+      const data = unwrapModelProviderData<{
         models?: Array<
           ApiModel & {
             user_model_provider_id: string;
@@ -718,11 +770,16 @@ export default function DefaultModelConfigPanel() {
             base_url?: string;
           }
         >;
-      }>(
-        "GET",
-        `/model_providers/models?model_type=${encodeURIComponent(capability)}`,
-      );
-      const options = (data.models || []).map((model) => {
+      }>(response.data);
+      const fetchedOptions = (data.models || [])
+        .filter((model) =>
+          trimmedKeyword
+            ? `${model.name} ${model.provider_name} ${model.group_name}`
+                .toLowerCase()
+                .includes(trimmedKeyword.toLowerCase())
+            : true,
+        )
+        .map((model) => {
         const provider =
           providerOptions.find(
             (item) => item.id === model.user_model_provider_id,
@@ -756,6 +813,17 @@ export default function DefaultModelConfigPanel() {
           value: getModelValue(provider.id, group.id, providerModel.id),
         };
       });
+      const selectedValue = selectedModels[capability];
+      const selectedOption =
+        selectedValue &&
+        (moduleModelOptions[capability] || []).find(
+          (option) => option.value === selectedValue,
+        );
+      const options =
+        selectedOption &&
+        !fetchedOptions.some((option) => option.value === selectedOption.value)
+          ? [selectedOption, ...fetchedOptions]
+          : fetchedOptions;
 
       setModuleModelOptions((current) => ({
         ...current,
@@ -792,13 +860,12 @@ export default function DefaultModelConfigPanel() {
       },
     ];
 
-    return modelProviderRequest<{ selections?: SelectedModelApiItem[] }>(
-      "PUT",
-      "/model_providers/selected_models",
-      {
+    const response = await modelProvidersApi.apiCoreModelProvidersSelectedModelsPut({
+      setSelectedModelsOpenAPIRequest: {
         selections,
       },
-    );
+    });
+    return unwrapModelProviderData<{ selections?: SelectedModelApiItem[] }>(response.data);
   };
 
   const toggleShareModel = async (
@@ -812,14 +879,14 @@ export default function DefaultModelConfigPanel() {
     }
 
     try {
-      await modelProviderRequest(
-        "PUT",
-        "/model_providers/selected_models/share",
-        {
-          model_id: parseModelValue(value).modelId,
-          model_key: capability,
-          share,
-        },
+      await modelProvidersDefaultApi.apiCoreModelProvidersSelectedModelsSharePut(
+        withModelProviderJsonOptions({
+          data: {
+            model_id: parseModelValue(value).modelId,
+            model_key: capability,
+            share,
+          },
+        }),
       );
       setShareStatus((current) => ({ ...current, [capability]: share }));
       message.success(
@@ -897,10 +964,8 @@ export default function DefaultModelConfigPanel() {
     service: CloudServiceSlotKey,
     value?: string,
   ) => {
-    return modelProviderRequest<{ selections?: SelectedCloudServiceApiItem[] }>(
-      "PUT",
-      "/model_providers/selected_providers",
-      {
+    const response = await modelProvidersApi.apiCoreModelProvidersSelectedProvidersPut({
+      setSelectedProviderOpenAPIRequest: {
         selections: [
           {
             category: cloudServiceCategoryBySlot[service],
@@ -908,25 +973,50 @@ export default function DefaultModelConfigPanel() {
           },
         ],
       },
+    });
+    return unwrapModelProviderData<{ selections?: SelectedCloudServiceApiItem[] }>(
+      response.data as unknown,
     );
   };
 
-  const loadVerifiedCloudService = async (service: CloudServiceConfig) => {
+  const loadVerifiedCloudService = async (
+    service: CloudServiceConfig,
+    keyword = "",
+  ) => {
     if (cloudServiceLoading[service.key]) {
       return;
     }
 
     setCloudServiceLoading((current) => ({ ...current, [service.key]: true }));
     try {
-      const data = await modelProviderRequest<CloudServiceGroupListResponse>(
-        "GET",
-        `/model_providers/provider_groups?category=${encodeURIComponent(service.category)}`,
+      const trimmedKeyword = keyword.trim();
+      const response = await modelProvidersApi.apiCoreModelProvidersProviderGroupsGet({
+        category: service.category,
+      });
+      const data = unwrapModelProviderData<CloudServiceGroupListResponse>(response.data);
+      const groups = (data.groups || []).filter((group) =>
+        trimmedKeyword
+          ? `${group.provider_name} ${group.group_name} ${group.base_url}`
+              .toLowerCase()
+              .includes(trimmedKeyword.toLowerCase())
+          : true,
       );
-      const groups = data.groups || [];
-      const options = groups.map((group) =>
+      const fetchedOptions = groups.map((group) =>
         mapVerifiedCloudServiceGroup(group, service.category),
       );
       const currentSelectedGroupId = selectedCloudServices[service.key];
+      const selectedOption =
+        currentSelectedGroupId &&
+        (cloudServiceOptions[service.key] || []).find(
+          (option) => option.groupId === currentSelectedGroupId,
+        );
+      const options =
+        selectedOption &&
+        !fetchedOptions.some(
+          (option) => option.groupId === selectedOption.groupId,
+        )
+          ? [selectedOption, ...fetchedOptions]
+          : fetchedOptions;
       const selectedGroupId =
         currentSelectedGroupId &&
         options.some((option) => option.groupId === currentSelectedGroupId)
@@ -1013,14 +1103,14 @@ export default function DefaultModelConfigPanel() {
       return;
     }
 
-    void modelProviderRequest(
-      "PUT",
-      "/model_providers/selected_providers/share",
-      {
-        group_id: selectedCloudServices[service],
-        share,
+    void modelProvidersApi
+      .apiCoreModelProvidersSelectedProvidersSharePut({
+        setSharedProviderOpenAPIRequest: {
+          group_id: selectedCloudServices[service],
+          share,
+        },
       },
-    )
+      )
       .then(() => {
         setCloudServiceShareStatus((current) => ({
           ...current,
@@ -1132,13 +1222,7 @@ export default function DefaultModelConfigPanel() {
                 ) : null}
                 {!isAdmin ? (
                   <Tooltip
-                    title={
-                      modelReadyStatus[module.key] === false
-                        ? t("modelProvider.modelNotReadyTip")
-                        : modelReadyStatus[module.key] === true
-                          ? t("modelProvider.modelReadyTip")
-                          : undefined
-                    }
+                    title={getModelReadyTooltip(t, modelReadyStatus[module.key])}
                   >
                     <span
                       aria-label={t("modelProvider.readyStatusAria", {
@@ -1146,9 +1230,9 @@ export default function DefaultModelConfigPanel() {
                       })}
                       className="model-provider-ready-indicator"
                     >
-                      {modelReadyStatus[module.key] === true ? (
+                      {modelReadyStatus[module.key]?.ready ? (
                         <CheckCircleOutlined className="model-provider-ready-icon is-ready" />
-                      ) : modelReadyStatus[module.key] === false ? (
+                      ) : modelReadyStatus[module.key]?.ready === false ? (
                         <MinusCircleOutlined className="model-provider-ready-icon is-not-ready" />
                       ) : null}
                     </span>
@@ -1160,6 +1244,7 @@ export default function DefaultModelConfigPanel() {
                 allowClear={!module.required}
                 className="model-provider-model-select"
                 disabled={module.restricted && !isAdmin}
+                filterOption={false}
                 id={`model-provider-${module.key.toLowerCase()}`}
                 listHeight={340}
                 optionLabelProp="label"
@@ -1171,14 +1256,26 @@ export default function DefaultModelConfigPanel() {
                       : t("modelProvider.optionalModelPlaceholder")
                 }
                 popupClassName="model-provider-select-dropdown"
+                showSearch
                 suffixIcon={
                   <DownOutlined className="model-provider-select-caret" />
                 }
                 value={selectedModels[module.key]}
                 onChange={(value) => handleModelSelection(module.key, value)}
+                onSearch={(value) => {
+                  setModuleModelSearchKeywords((current) => ({
+                    ...current,
+                    [module.key]: value,
+                  }));
+                  void loadModuleModels(module.key, true, value);
+                }}
                 onDropdownVisibleChange={(open) => {
                   if (open) {
-                    void loadModuleModels(module.key, true);
+                    void loadModuleModels(
+                      module.key,
+                      true,
+                      moduleModelSearchKeywords[module.key] || "",
+                    );
                   }
                 }}
                 loading={optionLoading}
@@ -1275,13 +1372,7 @@ export default function DefaultModelConfigPanel() {
                 ) : null}
                 {!isAdmin ? (
                   <Tooltip
-                    title={
-                      cloudReady === false
-                        ? t("modelProvider.cloudServiceNotReadyTip")
-                        : cloudReady === true
-                          ? t("modelProvider.cloudServiceReadyTip")
-                          : undefined
-                    }
+                    title={getCloudServiceReadyTooltip(t, cloudReady)}
                   >
                     <span
                       aria-label={t("modelProvider.readyStatusAria", {
@@ -1289,9 +1380,9 @@ export default function DefaultModelConfigPanel() {
                       })}
                       className="model-provider-ready-indicator"
                     >
-                      {cloudReady === true ? (
+                      {cloudReady?.ready ? (
                         <CheckCircleOutlined className="model-provider-ready-icon is-ready" />
-                      ) : cloudReady === false ? (
+                      ) : cloudReady?.ready === false ? (
                         <MinusCircleOutlined className="model-provider-ready-icon is-not-ready" />
                       ) : null}
                     </span>
@@ -1302,10 +1393,12 @@ export default function DefaultModelConfigPanel() {
               <Select
                 allowClear
                 className="model-provider-model-select"
+                filterOption={false}
                 id={`model-provider-cloud-${service.key}`}
                 optionLabelProp="label"
                 placeholder={t("modelProvider.cloudServicePlaceholder")}
                 popupClassName="model-provider-select-dropdown"
+                showSearch
                 suffixIcon={
                   <DownOutlined className="model-provider-select-caret" />
                 }
@@ -1313,9 +1406,19 @@ export default function DefaultModelConfigPanel() {
                 onChange={(value) =>
                   handleCloudServiceSelection(service.key, value)
                 }
+                onSearch={(value) => {
+                  setCloudServiceSearchKeywords((current) => ({
+                    ...current,
+                    [service.key]: value,
+                  }));
+                  void loadVerifiedCloudService(service, value);
+                }}
                 onDropdownVisibleChange={(open) => {
                   if (open) {
-                    void loadVerifiedCloudService(service);
+                    void loadVerifiedCloudService(
+                      service,
+                      cloudServiceSearchKeywords[service.key] || "",
+                    );
                   }
                 }}
                 loading={optionLoading}

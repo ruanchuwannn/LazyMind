@@ -31,22 +31,26 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
-  CloudOauthApi,
-  Configuration as AuthConfiguration,
   type CloudConnectionResponse,
 } from "@/api/generated/auth-client";
 import {
-  Configuration as CoreConfiguration,
-  DatasetsApi as CoreDatasetsApi,
   type Dataset as CoreDataset,
 } from "@/api/generated/core-client";
-import { AgentAppsAuth } from "@/components/auth";
-import { BASE_URL, axiosInstance, getLocalizedErrorMessage } from "@/components/request";
+import { getLocalizedErrorMessage } from "@/components/request";
+import {
+  dataSourceCloudOauthApi,
+  dataSourceDatasetsApi,
+  dataSourceModelProvidersApi,
+  unwrapDataSourceApiData,
+} from "./api";
 
 import "./index.scss";
 import DataSourceWizardModal from "./components/DataSourceWizardModal";
+import ExternalServiceConfigModal, {
+  type ExternalServiceConfigModalService,
+} from "@/modules/modelProvider/components/ExternalServiceConfigModal";
 import {
   clearFeishuAppSetup,
   createFeishuAccountId,
@@ -247,33 +251,17 @@ const sourceTypeOptions: Array<{
 ];
 const providerAuthOptions = sourceTypeOptions.filter((item) => item.type === "feishu");
 
-function createCoreDatasetsApiClient() {
-  const baseUrl = BASE_URL || window.location.origin;
-  return new CoreDatasetsApi(
-    new CoreConfiguration({
-      basePath: baseUrl,
-      baseOptions: {
-        headers: { "Content-Type": "application/json" },
-      },
-    }),
-    baseUrl,
-    axiosInstance,
-  );
-}
+const datasourceConnectors: Array<{ key: string; name: string; icon: ReactNode; logoUrl?: string }> = [
+  {
+    key: "sciverse",
+    name: "Sciverse",
+    icon: <SearchOutlined />,
+    logoUrl: "https://www.google.com/s2/favicons?domain=sciverse.space&sz=96",
+  },
+];
 
-function createCloudOauthApiClient() {
-  const baseUrl = BASE_URL || window.location.origin;
-  return new CloudOauthApi(
-    new AuthConfiguration({
-      basePath: baseUrl,
-      accessToken: () => AgentAppsAuth.getAccessToken(),
-      baseOptions: {
-        headers: AgentAppsAuth.getAuthHeaders(),
-      },
-    }),
-    baseUrl,
-    axiosInstance,
-  );
+function normalizeProviderName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function normalizeFeishuAccountStatus(status?: string): FeishuConnectionStatus {
@@ -359,7 +347,7 @@ function mapCloudConnectionToFeishuAccount(
   };
 }
 
-async function listKnowledgeBaseNames(client = createCoreDatasetsApiClient()) {
+async function listKnowledgeBaseNames(client = dataSourceDatasetsApi) {
   const names: string[] = [];
   let pageToken: string | undefined;
 
@@ -382,7 +370,7 @@ async function listKnowledgeBaseNames(client = createCoreDatasetsApiClient()) {
   return names;
 }
 
-async function listDefaultKnowledgeBaseIds(client = createCoreDatasetsApiClient()) {
+async function listDefaultKnowledgeBaseIds(client = dataSourceDatasetsApi) {
   const ids: string[] = [];
   let pageToken: string | undefined;
 
@@ -791,6 +779,7 @@ function parseFeishuOAuthCallbackInput(value: string) {
 export default function DataSourceManagement() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const [form] = Form.useForm<SourceFormValues>();
   const [sources, setSources] = useState<DataSourceItem[]>([]);
   const [activeView, setActiveView] = useState<DataSourceView>(() =>
@@ -810,6 +799,9 @@ export default function DataSourceManagement() {
   const [selectedType, setSelectedType] = useState<SourceType | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [createProviderModalOpen, setCreateProviderModalOpen] = useState(false);
+  const [externalServiceModalOpen, setExternalServiceModalOpen] = useState(false);
+  const [activeExternalService, setActiveExternalService] =
+    useState<ExternalServiceConfigModalService | null>(null);
   const [authSelectModalOpen, setAuthSelectModalOpen] = useState(false);
   const [oauthState, setOauthState] = useState<OAuthState>("pending");
   const [connectionVerified, setConnectionVerified] = useState(false);
@@ -1421,7 +1413,7 @@ export default function DataSourceManagement() {
     datasetName: string,
     chatEnabled: boolean,
   ) => {
-    const client = createCoreDatasetsApiClient();
+    const client = dataSourceDatasetsApi;
     if (chatEnabled) {
       await client.apiCoreDatasetsDatasetSetDefaultPost({
         dataset: datasetId,
@@ -1777,7 +1769,7 @@ export default function DataSourceManagement() {
   const refreshFeishuAuthAccounts = async () => {
     try {
       const response =
-        await createCloudOauthApiClient().listConnectionsApiAuthserviceV1CloudConnectionsGet({
+        await dataSourceCloudOauthApi.listConnectionsApiAuthserviceV1CloudConnectionsGet({
           provider: "feishu",
           status: null,
         });
@@ -2465,6 +2457,74 @@ export default function DataSourceManagement() {
   const handleManageFeishuAuth = () => {
     navigate("/data-sources/providers/feishu");
   };
+
+  const handleManageDatasourceConnector = async (connector: typeof datasourceConnectors[number]) => {
+    if (connector.key !== "sciverse") {
+      return;
+    }
+    try {
+      const response = await dataSourceModelProvidersApi.apiCoreModelProvidersGet({
+        category: "datasource",
+        keyword: connector.name,
+      });
+      const providers = unwrapDataSourceApiData<{
+        providers?: Array<{
+          id: string;
+          name: string;
+          description?: string;
+          is_configured?: boolean;
+        }>;
+      }>(response.data).providers || [];
+      const provider = providers.find(
+        (item) => normalizeProviderName(item.name) === normalizeProviderName(connector.name)
+      );
+      if (!provider) {
+        message.error(t("modelProvider.external.loadFailed"));
+        return;
+      }
+      setActiveExternalService({
+        key: provider.id,
+        name: provider.name || connector.name,
+        description:
+          provider.description ||
+          t("modelProvider.external.sciverseDesc", { defaultValue: "Sciverse 面向科研场景提供论文搜索、元数据检索和文献内容读取能力。" }),
+        fields: ["apiKey"],
+        logo: connector.icon,
+        logoUrl: connector.logoUrl || "",
+        tone: "violet",
+        status: provider.is_configured ? "configured" : "missing",
+        category: "tools",
+        providerCategory: "datasource",
+        baseUrl: "https://api.sciverse.space",
+      });
+      setExternalServiceModalOpen(true);
+    } catch (error) {
+      message.error(getLocalizedErrorMessage(error, t("modelProvider.external.loadFailed")));
+    }
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("provider") !== "sciverse") {
+      return;
+    }
+    const connector = datasourceConnectors.find((item) => item.key === "sciverse");
+    if (!connector) {
+      return;
+    }
+    setActiveView("connectors");
+    void handleManageDatasourceConnector(connector);
+
+    params.delete("provider");
+    params.set("view", "connectors");
+    navigate(
+      {
+        pathname: "/data-sources",
+        search: `?${params.toString()}`,
+      },
+      { replace: true },
+    );
+  }, [location.search]);
 
   const handleOpenFeishuGuideFromAuthSelect = () => {
     saveFeishuDataSourceWizardDraft({
@@ -3331,6 +3391,43 @@ export default function DataSourceManagement() {
                   </button>
                 );
               })}
+              {datasourceConnectors.map((connector) => (
+                <button
+                  key={connector.key}
+                  type="button"
+                  className="data-source-provider-card"
+                  onClick={() => {
+                    void handleManageDatasourceConnector(connector);
+                  }}
+                >
+                  <span className={`data-source-provider-logo data-source-icon-${connector.key}`}>
+                    {connector.logoUrl ? (
+                      <img
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        src={connector.logoUrl}
+                        onError={(event) => {
+                          event.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      connector.icon
+                    )}
+                  </span>
+                  <span className="data-source-provider-card-copy">
+                    <span className="data-source-provider-title-row">
+                      <span className="data-source-provider-name">{connector.name}</span>
+                    </span>
+                    <span className="data-source-provider-desc">
+                      Sciverse 面向科研场景的论文搜索与文献内容读取能力
+                    </span>
+                  </span>
+                  <span className="data-source-provider-card-arrow" aria-hidden="true">
+                    <ArrowRightOutlined />
+                  </span>
+                </button>
+              ))}
             </div>
           </main>
         )}
@@ -3551,6 +3648,20 @@ export default function DataSourceManagement() {
           />
         </Form>
       </Modal>
+
+      <ExternalServiceConfigModal
+        open={externalServiceModalOpen}
+        service={activeExternalService}
+        onClose={() => setExternalServiceModalOpen(false)}
+        onChanged={() => {
+          if (activeExternalService) {
+            setActiveExternalService({
+              ...activeExternalService,
+              status: "configured",
+            });
+          }
+        }}
+      />
 
       <DataSourceWizardModal
         t={t}

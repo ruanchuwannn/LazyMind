@@ -180,9 +180,238 @@ func TestTargetTreeNodeUsesBindingTargetSemantics(t *testing.T) {
 	}
 }
 
-func TestSourceTreeListChildrenUsesIndexedRepoAndDoesNotAccessConnector(t *testing.T) {
+func TestSourceTreeListChildrenUsesLiveConnectorByDefault(t *testing.T) {
 	t.Parallel()
 
+	spy := &treeConnectorSpy{}
+	registry, err := connector.NewDefaultConnectorRegistry(spy)
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	repo := newTreeReadRepo()
+	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
+	repo.bindings["source-1"] = []store.Binding{{
+		BindingID:        "binding-1",
+		SourceID:         "source-1",
+		TreeKey:          "tree-root",
+		ConnectorType:    string(treeTestConnectorType),
+		TargetType:       string(treeTestTargetType),
+		TargetRef:        "tree-test://root",
+		AgentID:          "agent-1",
+		AuthConnectionID: "auth-1",
+		ProviderOptions:  store.JSON{"existing": "kept"},
+		Status:           "ACTIVE",
+	}}
+	engine := NewDBSourceTreeQueryEngine(
+		repo,
+		TreeQueryLimits{DefaultPageSize: 10, MaxPageSize: 10, MaxAllCurrentLevelItems: 10},
+		WithSourceTreeConnectorRegistry(registry),
+	)
+
+	page, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
+		SourceID:        "source-1",
+		BindingID:       "binding-1",
+		ProviderOptions: map[string]any{"user_id": "user-1"},
+		PageSize:        10,
+	})
+	if err != nil {
+		t.Fatalf("list live children: %v", err)
+	}
+	if repo.listObjectsCalls != 0 || len(spy.listRequests) != 1 || len(spy.mapObjects) != 2 {
+		t.Fatalf("expected live connector only, listObjects=%d list=%d map=%d", repo.listObjectsCalls, len(spy.listRequests), len(spy.mapObjects))
+	}
+	gotReq := spy.listRequests[0]
+	if gotReq.TargetType != treeTestTargetType || gotReq.TargetRef != "tree-test://root" || gotReq.AgentID != "agent-1" || gotReq.AuthConnectionID != "auth-1" {
+		t.Fatalf("binding target fields were not passed to connector: %+v", gotReq)
+	}
+	if gotReq.ProviderOptions.String("existing") != "kept" || gotReq.ProviderOptions.String("user_id") != "user-1" {
+		t.Fatalf("provider options were not merged: %+v", gotReq.ProviderOptions)
+	}
+	if page.SearchMode != SearchModeConnector || !page.HasMore || len(page.Items) != 2 || page.Items[1].Key != "binding-1:doc-1" || !page.Items[1].Selectable {
+		t.Fatalf("unexpected live page: %+v", page)
+	}
+}
+
+func TestSourceTreeLiveRootRequestUsesTreeKeyNodeRef(t *testing.T) {
+	t.Parallel()
+
+	spy := &treeConnectorSpy{connectorType: connector.ConnectorType("feishu")}
+	registry, err := connector.NewDefaultConnectorRegistry(spy)
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	repo := newTreeReadRepo()
+	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
+	repo.bindings["source-1"] = []store.Binding{{
+		BindingID:        "binding-1",
+		SourceID:         "source-1",
+		TreeKey:          "feishu:wiki:space-1:node-root",
+		ConnectorType:    "feishu",
+		TargetType:       string(treeTestTargetType),
+		TargetRef:        "wiki:space-1:node-root",
+		AuthConnectionID: "auth-1",
+		Status:           "ACTIVE",
+	}}
+	engine := NewDBSourceTreeQueryEngine(
+		repo,
+		TreeQueryLimits{DefaultPageSize: 10, MaxPageSize: 100, MaxAllCurrentLevelItems: 10},
+		WithSourceTreeConnectorRegistry(registry),
+	)
+
+	_, err = engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
+		SourceID:  "source-1",
+		BindingID: "binding-1",
+		TreeKey:   "feishu:wiki:space-1:node-root",
+		ParentKey: "",
+		PageSize:  40,
+	})
+	if err != nil {
+		t.Fatalf("list live root children: %v", err)
+	}
+	if len(spy.listRequests) != 1 || spy.listRequests[0].NodeRef != "wiki:space-1:node-root" {
+		t.Fatalf("live root request should pass tree_key as provider node_ref, got %+v", spy.listRequests)
+	}
+}
+
+func TestSourceTreeLiveWikiRootFallsBackToBindingTargetWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	spy := &treeConnectorSpy{
+		connectorType: connector.ConnectorType("feishu"),
+		childrenSet:   true,
+		children:      []connector.RawObject{},
+		fetchPage: connector.RawObjectPage{Items: []connector.RawObject{
+			rawTreeObject("feishu:wiki:space-1:node-root", "", "Root Wiki", true, false),
+		}},
+	}
+	registry, err := connector.NewDefaultConnectorRegistry(spy)
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	repo := newTreeReadRepo()
+	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
+	repo.bindings["source-1"] = []store.Binding{{
+		BindingID:         "binding-1",
+		SourceID:          "source-1",
+		TreeKey:           "feishu:wiki:space-1:node-root",
+		ConnectorType:     "feishu",
+		TargetType:        "wiki_node",
+		TargetRef:         "wiki:space-1:node-root",
+		BindingGeneration: 1,
+		AuthConnectionID:  "auth-1",
+		Status:            "ACTIVE",
+	}}
+	engine := NewDBSourceTreeQueryEngine(
+		repo,
+		TreeQueryLimits{DefaultPageSize: 10, MaxPageSize: 100, MaxAllCurrentLevelItems: 10},
+		WithSourceTreeConnectorRegistry(registry),
+	)
+
+	page, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
+		SourceID:  "source-1",
+		BindingID: "binding-1",
+		TreeKey:   "feishu:wiki:space-1:node-root",
+		PageSize:  40,
+	})
+	if err != nil {
+		t.Fatalf("list live wiki root children: %v", err)
+	}
+	if len(spy.fetchRequests) != 1 {
+		t.Fatalf("expected empty live root to fetch binding target, got %d fetches", len(spy.fetchRequests))
+	}
+	gotFetch := spy.fetchRequests[0]
+	if gotFetch.ScopeType != connector.ScopeTypeWatchEvent || gotFetch.ScopeRef["target_ref"] != "wiki:space-1:node-root" {
+		t.Fatalf("unexpected root fetch request: %+v", gotFetch)
+	}
+	if page.SearchMode != SearchModeConnector || len(page.Items) != 1 {
+		t.Fatalf("unexpected fallback page: %+v", page)
+	}
+	if page.Items[0].ObjectKey != "feishu:wiki:space-1:node-root" || !page.Items[0].Selectable {
+		t.Fatalf("binding target document was not returned as selectable root: %+v", page.Items[0])
+	}
+}
+
+func TestSourceTreeLiveWikiRootPreservesBindingRootLayer(t *testing.T) {
+	t.Parallel()
+
+	spy := &treeConnectorSpy{
+		connectorType: connector.ConnectorType("feishu"),
+		childrenSet:   true,
+		children: []connector.RawObject{
+			rawTreeObject("feishu:wiki:space-1:node-child", "feishu:wiki:space-1:node-root", "Child Wiki", true, false),
+		},
+		fetchPage: connector.RawObjectPage{Items: []connector.RawObject{
+			rawTreeObject("feishu:wiki:space-1:node-root", "", "Root Wiki", true, true),
+		}},
+	}
+	registry, err := connector.NewDefaultConnectorRegistry(spy)
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	repo := newTreeReadRepo()
+	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
+	repo.bindings["source-1"] = []store.Binding{{
+		BindingID:         "binding-1",
+		SourceID:          "source-1",
+		TreeKey:           "feishu:wiki:space-1:node-root",
+		ConnectorType:     "feishu",
+		TargetType:        "wiki_node",
+		TargetRef:         "wiki:space-1:node-root",
+		BindingGeneration: 1,
+		AuthConnectionID:  "auth-1",
+		Status:            "ACTIVE",
+	}}
+	engine := NewDBSourceTreeQueryEngine(
+		repo,
+		TreeQueryLimits{DefaultPageSize: 10, MaxPageSize: 100, MaxAllCurrentLevelItems: 10},
+		WithSourceTreeConnectorRegistry(registry),
+	)
+
+	rootPage, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
+		SourceID:  "source-1",
+		BindingID: "binding-1",
+		TreeKey:   "feishu:wiki:space-1:node-root",
+		PageSize:  40,
+	})
+	if err != nil {
+		t.Fatalf("list live wiki root: %v", err)
+	}
+	if len(spy.fetchRequests) != 1 {
+		t.Fatalf("expected root request to fetch binding target, got %d fetches", len(spy.fetchRequests))
+	}
+	if len(rootPage.Items) != 1 || rootPage.Items[0].ObjectKey != "feishu:wiki:space-1:node-root" {
+		t.Fatalf("root request should return binding root layer, got %+v", rootPage.Items)
+	}
+	if !rootPage.Items[0].Selectable || !rootPage.Items[0].IsDocument || !rootPage.Items[0].HasChildren {
+		t.Fatalf("dual-role wiki root should be selectable and expandable: %+v", rootPage.Items[0])
+	}
+
+	childPage, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
+		SourceID:  "source-1",
+		BindingID: "binding-1",
+		TreeKey:   "feishu:wiki:space-1:node-root",
+		ParentKey: "feishu:wiki:space-1:node-root",
+		PageSize:  40,
+	})
+	if err != nil {
+		t.Fatalf("list live wiki root children: %v", err)
+	}
+	if len(spy.fetchRequests) != 1 {
+		t.Fatalf("expanded root should list children without fetching root again, got %d fetches", len(spy.fetchRequests))
+	}
+	if len(childPage.Items) != 1 || childPage.Items[0].ObjectKey != "feishu:wiki:space-1:node-child" {
+		t.Fatalf("expanded root should return real children, got %+v", childPage.Items)
+	}
+}
+
+func TestSourceTreeListChildrenUsesIndexedRepoWhenUseCache(t *testing.T) {
+	t.Parallel()
+
+	spy := &treeConnectorSpy{}
+	registry, err := connector.NewDefaultConnectorRegistry(spy)
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
 	repo := newTreeReadRepo()
 	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
 	repo.bindings["source-1"] = []store.Binding{{
@@ -200,7 +429,11 @@ func TestSourceTreeListChildrenUsesIndexedRepoAndDoesNotAccessConnector(t *testi
 		indexedObject("source-1", "binding-1", "tree-root", "doc-1", "", "Welcome.md", true, false),
 		indexedObject("source-1", "binding-1", "tree-root", "nested-1", "folder-1", "Nested.md", true, false),
 	}
-	engine := NewDBSourceTreeQueryEngine(repo, TreeQueryLimits{DefaultPageSize: 10, MaxPageSize: 10, MaxAllCurrentLevelItems: 10})
+	engine := NewDBSourceTreeQueryEngine(
+		repo,
+		TreeQueryLimits{DefaultPageSize: 10, MaxPageSize: 10, MaxAllCurrentLevelItems: 10},
+		WithSourceTreeConnectorRegistry(registry),
+	)
 
 	roots, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{SourceID: "source-1"})
 	if err != nil {
@@ -214,6 +447,7 @@ func TestSourceTreeListChildrenUsesIndexedRepoAndDoesNotAccessConnector(t *testi
 		SourceID:  "source-1",
 		BindingID: "binding-1",
 		TreeKey:   "tree-root",
+		UseCache:  true,
 		ParentKey: "",
 		PageSize:  10,
 	})
@@ -222,6 +456,9 @@ func TestSourceTreeListChildrenUsesIndexedRepoAndDoesNotAccessConnector(t *testi
 	}
 	if repo.getSourceCalls != 2 || repo.getBindingCalls != 1 || repo.listObjectsCalls != 2 {
 		t.Fatalf("unexpected repo calls: source=%d binding=%d list=%d", repo.getSourceCalls, repo.getBindingCalls, repo.listObjectsCalls)
+	}
+	if len(spy.listRequests) != 0 {
+		t.Fatalf("cached source tree should not access connector: %+v", spy.listRequests)
 	}
 	if len(page.Items) != 2 {
 		t.Fatalf("expected current-level indexed children only, got %+v", page.Items)
@@ -254,6 +491,7 @@ func TestSourceTreeBindingRequestExpandsIndexedRootObject(t *testing.T) {
 	page, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
 		SourceID:  "source-1",
 		BindingID: "binding-1",
+		UseCache:  true,
 		PageSize:  10,
 	})
 	if err != nil {
@@ -291,6 +529,7 @@ func TestSourceTreeBindingRequestFallsBackToLegacyRootLevelObjects(t *testing.T)
 	page, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
 		SourceID:  "source-1",
 		BindingID: "binding-1",
+		UseCache:  true,
 		PageSize:  10,
 	})
 	if err != nil {
@@ -325,6 +564,7 @@ func TestSourceTreeAcceptsNodeRefAndTreeNodeKeyAsParent(t *testing.T) {
 	page, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
 		SourceID:  "source-1",
 		BindingID: "binding-1",
+		UseCache:  true,
 		NodeRef:   "binding-1:folder-1",
 		PageSize:  10,
 	})
@@ -354,6 +594,7 @@ func TestSourceTreeAllCurrentLevelRejectsTooManyIndexedChildren(t *testing.T) {
 	_, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
 		SourceID:  "source-1",
 		BindingID: "binding-1",
+		UseCache:  true,
 		ListMode:  ListModeAllCurrentLevel,
 		MaxItems:  1,
 	})
@@ -366,9 +607,12 @@ func TestSourceDocumentQueryReadsIndexedDocumentsOnly(t *testing.T) {
 	repo := newTreeReadRepo()
 	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
 	repo.bindings["source-1"] = []store.Binding{{BindingID: "binding-1", SourceID: "source-1"}}
+	object := indexedObject("source-1", "binding-1", "tree-root", "doc-1", "", "Welcome", true, false).Object
+	object.SizeBytes = 42
+	object.FileExtension = ".md"
 	repo.documents = []DocumentWithState{{
-		Object: indexedObject("source-1", "binding-1", "tree-root", "doc-1", "", "Welcome.md", true, false).Object,
-		State:  store.DocumentState{SourceID: "source-1", BindingID: "binding-1", ObjectKey: "doc-1", SourceState: "NEW", SyncState: "IDLE", Selectable: true},
+		Object: object,
+		State:  store.DocumentState{SourceID: "source-1", BindingID: "binding-1", ObjectKey: "doc-1", SourceState: "NEW", SyncState: "IDLE", Selectable: true, SourceVersion: "v1"},
 		Document: &store.Document{
 			DocumentID:     "document-1",
 			SourceID:       "source-1",
@@ -389,6 +633,15 @@ func TestSourceDocumentQueryReadsIndexedDocumentsOnly(t *testing.T) {
 	}
 	if resp.Items[0].CoreDocumentID != "core-doc-1" || resp.Items[0].SourceState != "NEW" {
 		t.Fatalf("document state was not joined from indexed state: %+v", resp.Items[0])
+	}
+	if resp.Items[0].Name != "Welcome.md" || resp.Items[0].FileType != "md" || resp.Items[0].SizeBytes != 42 {
+		t.Fatalf("document metadata was not mapped for datasource UI: %+v", resp.Items[0])
+	}
+	if resp.Items[0].DisplayName != "Welcome" {
+		t.Fatalf("display_name should preserve source name: %+v", resp.Items[0])
+	}
+	if resp.Summary["storage_bytes"] != int64(42) {
+		t.Fatalf("document summary storage_bytes was not mapped: %+v", resp.Summary)
 	}
 }
 
@@ -432,16 +685,24 @@ const (
 )
 
 type treeConnectorSpy struct {
+	connectorType  connector.ConnectorType
 	supportsSearch bool
+	childrenSet    bool
 	children       []connector.RawObject
+	fetchPage      connector.RawObjectPage
 	listRequests   []connector.ListChildrenRequest
+	fetchRequests  []connector.FetchPageRequest
 	searchRequests []connector.SearchRequest
 	mapObjects     []connector.RawObject
 }
 
 func (c *treeConnectorSpy) Spec() connector.ConnectorSpec {
+	connectorType := c.connectorType
+	if connectorType == "" {
+		connectorType = treeTestConnectorType
+	}
 	return connector.ConnectorSpec{
-		ConnectorType:         treeTestConnectorType,
+		ConnectorType:         connectorType,
 		TargetTypes:           []connector.TargetType{treeTestTargetType},
 		SupportsSearch:        c.supportsSearch,
 		SupportsExportFormats: []connector.ExportFormat{connector.ExportFormatOriginal},
@@ -456,7 +717,7 @@ func (c *treeConnectorSpy) ValidateTarget(context.Context, connector.ValidateTar
 func (c *treeConnectorSpy) ListChildren(_ context.Context, req connector.ListChildrenRequest) (connector.RawObjectPage, error) {
 	c.listRequests = append(c.listRequests, req)
 	items := c.children
-	if len(items) == 0 {
+	if !c.childrenSet && len(items) == 0 {
 		items = []connector.RawObject{
 			rawTreeObject("folder-1", "", "Guides", false, true),
 			rawTreeObject("doc-1", "", "Welcome.md", true, false),
@@ -484,7 +745,11 @@ func (c *treeConnectorSpy) Search(_ context.Context, req connector.SearchRequest
 	return connector.RawObjectPage{Items: []connector.RawObject{rawTreeObject("doc-1", "", "Welcome.md", true, false)}}, nil
 }
 
-func (c *treeConnectorSpy) FetchPage(context.Context, connector.FetchPageRequest) (connector.RawObjectPage, error) {
+func (c *treeConnectorSpy) FetchPage(_ context.Context, req connector.FetchPageRequest) (connector.RawObjectPage, error) {
+	c.fetchRequests = append(c.fetchRequests, req)
+	if len(c.fetchPage.Items) > 0 || c.fetchPage.HasMore || c.fetchPage.NextCursor != "" || c.fetchPage.ListComplete {
+		return c.fetchPage, nil
+	}
 	return connector.RawObjectPage{}, connector.NewError(connector.ErrorCodeUnsupported, "not used")
 }
 
@@ -634,6 +899,19 @@ func (r *treeReadRepo) ListDocuments(_ context.Context, req store.SourceDocument
 		}
 	}
 	return items, len(items), nil
+}
+
+func (r *treeReadRepo) GetSourceSummary(_ context.Context, req store.SourceSummaryRequest) (store.SourceSummary, error) {
+	summary := store.SourceSummary{SourceID: req.SourceID, BindingID: req.BindingID}
+	for _, item := range r.documents {
+		if item.Object.SourceID != req.SourceID || (req.BindingID != "" && item.Object.BindingID != req.BindingID) {
+			continue
+		}
+		summary.DocumentObjects++
+		summary.StorageBytes += item.Object.SizeBytes
+		store.AddSourceStateCount(&summary, item.State.SourceState, 1)
+	}
+	return summary, nil
 }
 
 func objectMatchesList(object store.SourceObject, req ObjectListRequest) bool {

@@ -7,6 +7,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -141,11 +142,15 @@ export default function DatasetListPage() {
               className="dataset-link-button"
               onClick={() => navigate(`/dataset-management/${record.id}`)}
             >
-              {record.name}
+              <Tooltip title={record.name}>
+                <span className="dataset-name-text">{record.name}</span>
+              </Tooltip>
             </Button>
-            <Paragraph className="dataset-description" ellipsis={{ rows: 1 }}>
-              {record.description || "-"}
-            </Paragraph>
+            <Tooltip title={record.description || ""}>
+              <Paragraph className="dataset-description" ellipsis={{ rows: 1 }}>
+                {record.description || "-"}
+              </Paragraph>
+            </Tooltip>
           </div>
         ),
       },
@@ -155,11 +160,13 @@ export default function DatasetListPage() {
         width: 220,
         render: (_, record) =>
           record.knowledge_bases?.length ? (
-            <Space size={[4, 4]} wrap>
+            <div className="dataset-kb-scroll-list">
               {record.knowledge_bases.map((item) => (
-                <Tag key={item.id}>{item.name}</Tag>
+                <Tag key={item.id} className="dataset-kb-scroll-tag">
+                  {item.name}
+                </Tag>
               ))}
-            </Space>
+            </div>
           ) : (
             <Text type="secondary">-</Text>
           ),
@@ -270,7 +277,6 @@ export default function DatasetListPage() {
         onCancel={() => setFormModalOpen(false)}
         onSubmit={handleSubmitDataset}
       />
-
     </div>
   );
 }

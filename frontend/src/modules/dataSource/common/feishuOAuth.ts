@@ -1,8 +1,14 @@
-import { AgentAppsAuth } from "@/components/auth";
 import { BASE_URL } from "@/components/request";
 import i18n from "@/i18n";
+import {
+  dataSourceCloudOauthApi,
+  unwrapDataSourceApiData,
+} from "@/modules/dataSource/api";
+import type {
+  CloudOAuthAuthorizeURLBody,
+  CloudOAuthCallbackBody,
+} from "@/api/generated/auth-client";
 
-const API_BASE = `${BASE_URL || window.location.origin}/api/authservice/v1`;
 const RESULT_STORAGE_KEY = "lazymind:datasource:feishu-oauth:result";
 const DRAFT_STORAGE_KEY = "lazymind:datasource:feishu-oauth:draft";
 const PENDING_STORAGE_KEY = "lazymind:datasource:feishu-oauth:pending";
@@ -98,7 +104,7 @@ function normalizeSameOriginReturnUrl(value?: string) {
       return fallbackUrl;
     }
 
-    if (url.pathname.endsWith("/oauth/feishu/data-source/callback")) {
+    if (url.pathname.endsWith("/oauth/feishu/callback")) {
       return fallbackUrl;
     }
 
@@ -106,27 +112,6 @@ function normalizeSameOriginReturnUrl(value?: string) {
   } catch {
     return fallbackUrl;
   }
-}
-
-function getAuthHeaders() {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  const token = AgentAppsAuth.getAccessToken();
-  const userInfo = AgentAppsAuth.getUserInfo();
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  if (userInfo?.userId) {
-    headers["X-User-Id"] = userInfo.userId;
-  }
-
-  return headers;
-}
-
-function parseJsonResponse(response: Response) {
-  return response.json().catch(() => ({}));
 }
 
 function unwrapPayload<T>(payload: any): T {
@@ -205,6 +190,41 @@ function getErrorMessage(payload: any, fallback: string) {
   }
 
   return fallback;
+}
+
+function hasBusinessError(payload: any) {
+  const code = payload?.code ?? payload?.data?.code;
+  if (code === undefined || code === null || code === "") {
+    return false;
+  }
+
+  return !["0", "200"].includes(String(code).trim());
+}
+
+function getFeishuOAuthCallbackErrorMessage(payload: any) {
+  const normalizedPayload = unwrapPayload<any>(payload);
+  const rawMessage = [
+    payload?.code,
+    payload?.message,
+    payload?.ex_message,
+    payload?.ex_mesage,
+    normalizedPayload?.code,
+    normalizedPayload?.message,
+    normalizedPayload?.ex_message,
+    normalizedPayload?.ex_mesage,
+  ]
+    .map((item) => `${item || ""}`.trim().toLowerCase())
+    .filter(Boolean)
+    .join(" ");
+
+  if (
+    rawMessage.includes("1000706") ||
+    rawMessage.includes("reauthorized account does not match")
+  ) {
+    return i18n.t("admin.dataSourceOauthReauthorizeAccountMismatch");
+  }
+
+  return getErrorMessage(payload, i18n.t("admin.dataSourceOauthFailedRetry"));
 }
 
 function normalizeScopes(value: unknown): string[] {
@@ -316,11 +336,11 @@ function normalizeConnection(payload: any, fallbackConnectionId?: string): Feish
 }
 
 export function getFeishuDataSourceCallbackUrl() {
-  return buildAppUrlFromApiOrigin("/oauth/feishu/data-source/callback");
+  return buildAppUrlFromApiOrigin("/oauth/feishu/callback");
 }
 
 export function getDataSourceManagementUrl() {
-  return `${window.location.origin}${getBaseName()}/data-sources`;
+  return `${window.location.origin}${getBaseName()}/data-sources/providers/feishu`;
 }
 
 export function getFeishuDataSourceOAuthReturnUrl(state?: string | null) {
@@ -359,39 +379,64 @@ export function openCenteredPopup(url: string, title: string) {
   );
 }
 
-export async function requestFeishuDataSourceAuthorizeUrl(input: {
-  tenantId: string;
-  appId: string;
-  appSecret: string;
-  scopes: string[];
-  returnUrl?: string;
-}) {
-  const redirectUri = getFeishuDataSourceCallbackUrl();
+type FeishuAuthorizeUrlInput =
+  | {
+      tenantId: string;
+      appId: string;
+      appSecret: string;
+      scopes: string[];
+      returnUrl?: string;
+      reauthorizeConnectionId?: never;
+    }
+  | {
+      tenantId: string;
+      scopes: string[];
+      returnUrl?: string;
+      appId?: never;
+      appSecret?: never;
+      reauthorizeConnectionId: string;
+    };
 
-  const response = await fetch(
-    `${API_BASE}/cloud/feishu/oauth/authorize-url`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers: getAuthHeaders(),
-      body: JSON.stringify({
-        tenant_id: input.tenantId,
-        auth_mode: "oauth_user",
-        client_id: input.appId.trim(),
-        client_secret: input.appSecret.trim(),
-        redirect_uri: redirectUri,
-        scope: input.scopes.join(" "),
-      }),
-    },
-  );
-  const payload = await parseJsonResponse(response);
-  const data = unwrapPayload<any>(payload);
+export async function requestFeishuDataSourceAuthorizeUrl(input: FeishuAuthorizeUrlInput) {
+  const redirectUri = getFeishuDataSourceCallbackUrl();
+  const appId = input.appId?.trim();
+  const appSecret = input.appSecret?.trim();
+  const reauthorizeConnectionId = input.reauthorizeConnectionId?.trim();
+  const body: Record<string, unknown> = {
+    auth_mode: "oauth_user",
+    redirect_uri: redirectUri,
+  };
+
+  if (reauthorizeConnectionId) {
+    body.reauthorize_connection_id = reauthorizeConnectionId;
+  } else {
+    body.tenant_id = input.tenantId;
+    body.scope = input.scopes.join(" ");
+    if (appId && appSecret) {
+      body.client_id = appId;
+      body.client_secret = appSecret;
+    }
+  }
+
+  let payload: unknown;
+  try {
+    const response = await dataSourceCloudOauthApi.oauthAuthorizeUrlApiAuthserviceV1CloudProviderOauthAuthorizeUrlPost({
+      provider: "feishu",
+      cloudOAuthAuthorizeURLBody: body as CloudOAuthAuthorizeURLBody,
+    });
+    payload = response.data;
+  } catch (error: any) {
+    payload = error?.response?.data || error;
+    throw new Error(getErrorMessage(payload, i18n.t("admin.dataSourceAuthorizeUrlFailed")));
+  }
+
+  const data = unwrapDataSourceApiData<any>(payload);
   const authorizeUrl = data?.authorize_url || data?.authorizeUrl;
   const connectionId = data?.connection_id || data?.connectionId;
   const state = data?.state;
 
   if (
-    !response.ok ||
+    hasBusinessError(payload) ||
     typeof authorizeUrl !== "string" ||
     !authorizeUrl.trim() ||
     typeof connectionId !== "string" ||
@@ -423,22 +468,28 @@ export async function finishFeishuDataSourceOAuth(code: string, state: string) {
     throw new Error(i18n.t("admin.dataSourceOauthStateMismatch"));
   }
 
-  const response = await fetch(`${API_BASE}/cloud/feishu/oauth/callback`, {
-    method: "POST",
-    credentials: "include",
-    headers: getAuthHeaders(),
-    body: JSON.stringify({
+  let payload: unknown;
+  try {
+    const response = await dataSourceCloudOauthApi.oauthCallbackApiAuthserviceV1CloudProviderOauthCallbackPost({
+      provider: "feishu",
+      cloudOAuthCallbackBody: {
       tenant_id: pending.tenantId,
       connection_id: pending.connectionId,
       code,
       state,
       redirect_uri: pending.redirectUri,
-    }),
-  });
-  const payload = await parseJsonResponse(response);
+      } satisfies CloudOAuthCallbackBody,
+    });
+    payload = response.data;
+  } catch (error: any) {
+    payload = error?.response?.data || error;
+    throw new Error(getFeishuOAuthCallbackErrorMessage(payload));
+  }
 
-  if (!response.ok) {
-    throw new Error(getErrorMessage(payload, i18n.t("admin.dataSourceOauthFailedRetry")));
+  if (
+    hasBusinessError(payload)
+  ) {
+    throw new Error(getFeishuOAuthCallbackErrorMessage(payload));
   }
 
   clearPendingFeishuOAuthSession(state);
