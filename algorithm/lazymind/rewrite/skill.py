@@ -5,8 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from .base import (
-    BadRequestError,
-    UnprocessableContentError,
     _COMMON_LANGUAGE_RULES,
     _EDIT_DISPATCH,
     _PROMPT_BUILDERS,

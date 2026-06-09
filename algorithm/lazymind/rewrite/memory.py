@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from .base import (
-    BadRequestError,
     UnprocessableContentError,
     _COMMON_LANGUAGE_RULES,
     _EDIT_DISPATCH,
