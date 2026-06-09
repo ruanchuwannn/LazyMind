@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 import lazyllm
 from typing_extensions import TypedDict
@@ -27,36 +27,6 @@ class EditOperation(TypedDict, total=False):
 
 
 MemoryEditorTarget = Literal['memory', 'user']
-
-
-def _agentic_config() -> Dict[str, Any]:
-    config = lazyllm.globals.get('agentic_config') or {}
-    return config if isinstance(config, dict) else {}
-
-
-def _session_id(agentic_config: Optional[Dict[str, Any]] = None) -> str:
-    config = agentic_config if isinstance(agentic_config, dict) else _agentic_config()
-    return str(config.get('session_id') or getattr(lazyllm.globals, '_sid', '') or '').strip()
-
-
-def _current_content_for_target(agentic_config: Dict[str, Any], target: str) -> str:
-    keys = (
-        ('user', 'user_preference')
-        if target == 'user'
-        else (target,)
-    )
-    for key in keys:
-        value = agentic_config.get(key)
-        if isinstance(value, str):
-            return value
-    fallback = agentic_config.get('current_content')
-    if isinstance(fallback, str):
-        return fallback
-    return ''
-
-
-def _storage_target(target: str) -> str:
-    return 'user_preference' if target == 'user' else target
 
 
 @handle_tool_errors
@@ -89,21 +59,22 @@ def memory_editor(
               conflict resolution, or broader reorganization.
     """
     raw_target = str(target).strip()
-    if raw_target not in {'memory', 'user'}:
-        return tool_error(
-            'memory_editor',
-            f"Unknown target {target!r}; expected one of 'memory', 'user'."
+    agentic_config = lazyllm.globals['agentic_config']
+    session_id = str(agentic_config['session_id']).strip()
+    storage_target = 'user_preference' if raw_target == 'user' else raw_target
+    if raw_target == 'user':
+        current_content = (
+            agentic_config.get('user')
+            or agentic_config.get('user_preference')
+            or agentic_config.get('current_content')
+            or ''
         )
-    if not operations:
-        return tool_error('memory_editor', "'operations' must be a non-empty list.")
-
-    agentic_config = _agentic_config()
-    session_id = _session_id(agentic_config)
-    if not session_id:
-        return tool_error('memory_editor', "'session_id' is required in agentic_config.")
-
-    storage_target = _storage_target(raw_target)
-    current_content = _current_content_for_target(agentic_config, raw_target)
+    else:
+        current_content = (
+            agentic_config.get(raw_target)
+            or agentic_config.get('current_content')
+            or ''
+        )
     operation_payload = [dict(op) for op in operations]
     from lazymind.review.service.memory_generate import (
         UnprocessableContentError,

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lazymind.review.service.session_review import (
@@ -47,36 +46,16 @@ class SessionReviewPayload(BaseModel):
         return self
 
 
-def _ok(data: Dict[str, Any]) -> Dict[str, Any]:
-    return {'code': 0, 'msg': 'ok', 'data': data}
-
-
-def _fail(status_code: int, msg: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={'code': status_code, 'msg': msg, 'data': None},
-    )
-
-
-def _run_review(payload: SessionReviewPayload):
-    try:
-        result = generate_session_review(
-            target=payload.target,
-            session_id=payload.session_id,
-            history=payload.history,
-            current_content=payload.current_content,
-            model_config=payload.llm_config,
-        )
-        return _ok(result.model_dump())
-    except ValueError as exc:
-        return _fail(422, str(exc))
-    except Exception as exc:
-        return _fail(500, f'session review failed: {exc}')
-
-
 @router.post(
     '/api/chat/memory_review',
     summary='Review backend-provided history for memory or user_preference edits',
 )
 async def memory_review(payload: SessionReviewPayload):
-    return _run_review(payload)
+    result = generate_session_review(
+        target=payload.target,
+        session_id=payload.session_id,
+        history=payload.history,
+        current_content=payload.current_content,
+        model_config=payload.llm_config,
+    )
+    return result.model_dump()

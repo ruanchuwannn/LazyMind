@@ -6,40 +6,6 @@ from lazymind.chat.engine.tools import skill_manager as skill_manager_mod
 from lazymind.chat.engine.tools.infra.suggestion import Suggestion
 
 
-def test_memory_requires_session_id(monkeypatch):
-    monkeypatch.setattr(memory_mod.lazyllm, 'globals', {'agentic_config': {}})
-
-    result = memory_mod.memory_editor(
-        'memory',
-        [{'op': 'replace_all', 'content': 'new'}],
-    )
-
-    assert result == {
-        'success': False,
-        'tool': 'memory_editor',
-        'error': {
-            'reason': "'session_id' is required in agentic_config.",
-        },
-    }
-
-
-def test_memory_rejects_user_preference_target(monkeypatch):
-    monkeypatch.setattr(memory_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
-
-    result = memory_mod.memory_editor(
-        'user_preference',
-        [{'op': 'replace_all', 'content': 'new'}],
-    )
-
-    assert result == {
-        'success': False,
-        'tool': 'memory_editor',
-        'error': {
-            'reason': "Unknown target 'user_preference'; expected one of 'memory', 'user'.",
-        },
-    }
-
-
 def test_memory_editor_operations_write_memory_review(monkeypatch):
     assert not hasattr(memory_mod, 'memory')
 

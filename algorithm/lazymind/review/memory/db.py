@@ -16,15 +16,12 @@ from lazymind.config import config as _cfg
 MEMORY_REVIEW_SCHEMA = 'public'
 MEMORY_REVIEW_TABLE = 'memory_review'
 MEMORY_REVIEW_TABLE_QUALIFIED = f'{MEMORY_REVIEW_SCHEMA}.{MEMORY_REVIEW_TABLE}'
-MEMORY_REVIEW_TARGET_CHECK = f'{MEMORY_REVIEW_TABLE}_target_check'
 
 _DB_URL_ENV_HINT = (
     'LAZYMIND_CORE_DATABASE_URL, LAZYMIND_ACL_DB_DSN, or LAZYMIND_DATABASE_URL'
 )
 _engine_cache: Dict[str, Engine] = {}
 _engine_cache_lock = threading.Lock()
-_table_ensured = False
-_table_ensure_lock = threading.Lock()
 
 
 def _ensure_postgres_driver(url: str) -> str:
@@ -120,55 +117,6 @@ def _get_memory_review_conn() -> Engine:
     return _get_engine(url=url, dsn=dsn)
 
 
-def ensure_memory_review_table() -> None:
-    engine = _get_memory_review_conn()
-    with engine.begin() as conn:
-        conn.execute(text(
-            f"""
-            CREATE TABLE IF NOT EXISTS {MEMORY_REVIEW_TABLE_QUALIFIED} (
-                id TEXT PRIMARY KEY,
-                target TEXT NOT NULL CHECK (target IN ('memory', 'user_preference')),
-                session_id TEXT NOT NULL,
-                source_content TEXT NOT NULL DEFAULT '',
-                content TEXT NOT NULL,
-                operations JSONB NOT NULL DEFAULT '[]'::jsonb,
-                state TEXT NOT NULL DEFAULT 'success',
-                review_status TEXT NOT NULL DEFAULT 'pending',
-                time TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        ))
-        conn.execute(text(
-            f"""
-            ALTER TABLE {MEMORY_REVIEW_TABLE_QUALIFIED}
-                DROP CONSTRAINT IF EXISTS {MEMORY_REVIEW_TARGET_CHECK}
-            """
-        ))
-        conn.execute(text(
-            f"""
-            ALTER TABLE {MEMORY_REVIEW_TABLE_QUALIFIED}
-                ADD CONSTRAINT {MEMORY_REVIEW_TARGET_CHECK}
-                CHECK (target IN ('memory', 'user_preference'))
-            """
-        ))
-        conn.execute(text(
-            f"""
-            CREATE INDEX IF NOT EXISTS idx_memory_review_session_target_time
-                ON {MEMORY_REVIEW_TABLE_QUALIFIED} (session_id, target, time DESC)
-            """
-        ))
-
-
-def _ensure_table_once() -> None:
-    global _table_ensured
-    if _table_ensured:
-        return
-    with _table_ensure_lock:
-        if not _table_ensured:
-            ensure_memory_review_table()
-            _table_ensured = True
-
-
 def insert_memory_review_record(
     *,
     target: str,
@@ -183,8 +131,6 @@ def insert_memory_review_record(
         raise ValueError('session_id is required.')
     if not isinstance(content, str) or not content.strip():
         raise ValueError('content must be a non-empty string.')
-
-    _ensure_table_once()
 
     record_id = str(uuid4())
     operation_payload = json.dumps(operations or [], ensure_ascii=False)

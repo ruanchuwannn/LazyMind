@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .db import (
-    ensure_memory_review_table,
     insert_memory_review_record,
 )
 from .prompts import (
@@ -17,7 +16,6 @@ from .utils import (
 
 __all__ = [
     'build_session_review_prompt',
-    'ensure_memory_review_table',
     'is_successful_memory_editor_result',
     'insert_memory_review_record',
     'iter_tool_traces',
