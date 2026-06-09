@@ -71,7 +71,7 @@ MEMORY_REVIEW_PROMPT = (
 )
 
 
-def build_session_review_prompt(
+def build_memory_review_prompt(
     *,
     target: str,
     current_content: str,
@@ -142,5 +142,5 @@ def build_session_review_prompt(
 
 __all__ = [
     'MEMORY_REVIEW_PROMPT',
-    'build_session_review_prompt',
+    'build_memory_review_prompt',
 ]

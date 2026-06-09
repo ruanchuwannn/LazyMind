@@ -36,39 +36,39 @@ def _load_review_modules():
     module_names = [
         'lazymind',
         'lazymind.review',
-        'lazymind.review.memory',
-        'lazymind.review.memory.prompts',
-        'lazymind.review.memory.utils',
+        'lazymind.review.memory_review',
+        'lazymind.review.memory_review.prompts',
+        'lazymind.review.memory_review.utils',
         'lazymind.review.service',
-        'lazymind.review.service.session_review',
+        'lazymind.review.service.memory_review',
     ]
     original_modules = {name: sys.modules.get(name) for name in module_names}
 
     fake_modules = {
         'lazymind': _package('lazymind'),
         'lazymind.review': _package('lazymind.review'),
-        'lazymind.review.memory': _package('lazymind.review.memory'),
+        'lazymind.review.memory_review': _package('lazymind.review.memory_review'),
         'lazymind.review.service': _package('lazymind.review.service'),
     }
 
     try:
         sys.modules.update(fake_modules)
         memory_prompts = _load_module(
-            'lazymind.review.memory.prompts',
-            Path(_ALGO) / 'lazymind/review/memory/prompts.py',
+            'lazymind.review.memory_review.prompts',
+            Path(_ALGO) / 'lazymind/review/memory_review/prompts.py',
         )
         memory_utils = _load_module(
-            'lazymind.review.memory.utils',
-            Path(_ALGO) / 'lazymind/review/memory/utils.py',
+            'lazymind.review.memory_review.utils',
+            Path(_ALGO) / 'lazymind/review/memory_review/utils.py',
         )
-        session_review = _load_module(
-            'lazymind.review.service.session_review',
-            Path(_ALGO) / 'lazymind/review/service/session_review.py',
+        memory_review = _load_module(
+            'lazymind.review.service.memory_review',
+            Path(_ALGO) / 'lazymind/review/service/memory_review.py',
         )
         return SimpleNamespace(
             memory_prompts=memory_prompts,
             memory_utils=memory_utils,
-            session_review=session_review,
+            memory_review=memory_review,
         )
     finally:
         for name, original in original_modules.items():
@@ -78,8 +78,8 @@ def _load_review_modules():
                 sys.modules[name] = original
 
 
-def _load_session_review_module():
-    return _load_review_modules().session_review
+def _load_memory_review_module():
+    return _load_review_modules().memory_review
 
 
 def _load_memory_utils_module():
@@ -100,9 +100,9 @@ def _install_runtime_modules(monkeypatch, *, tools: ModuleType, config: Any) -> 
 
 
 def test_memory_review_prompt_excludes_preferences_and_workflows():
-    session_review = _load_session_review_module()
+    memory_review = _load_memory_review_module()
 
-    prompt = session_review.build_session_review_prompt(
+    prompt = memory_review.build_memory_review_prompt(
         target='memory',
         current_content='',
     )
@@ -121,9 +121,9 @@ def test_memory_review_prompt_excludes_preferences_and_workflows():
 
 
 def test_user_review_prompt_excludes_session_history():
-    session_review = _load_session_review_module()
+    memory_review = _load_memory_review_module()
 
-    prompt = session_review.build_session_review_prompt(
+    prompt = memory_review.build_memory_review_prompt(
         target='user',
         current_content='',
     )
@@ -133,10 +133,10 @@ def test_user_review_prompt_excludes_session_history():
     assert "Do not call memory_editor with target='memory'" in prompt
 
 
-def test_review_session_runs_agent_with_memory_editor_tool(monkeypatch):
-    session_review = _load_session_review_module()
-    ChatMessage = session_review.ChatMessage
-    SessionReviewRequest = session_review.SessionReviewRequest
+def test_review_memory_runs_agent_with_memory_editor_tool(monkeypatch):
+    memory_review = _load_memory_review_module()
+    ChatMessage = memory_review.ChatMessage
+    MemoryReviewRequest = memory_review.MemoryReviewRequest
 
     calls = {}
 
@@ -182,8 +182,8 @@ def test_review_session_runs_agent_with_memory_editor_tool(monkeypatch):
     monkeypatch.setitem(sys.modules, 'lazyllm.tools.fs.client', fake_fs_module)
     _install_runtime_modules(monkeypatch, tools=fake_tools_pkg, config=fake_config)
 
-    result = session_review.review_session(
-        SessionReviewRequest(
+    result = memory_review.review_memory(
+        MemoryReviewRequest(
             target='user',
             session_id='sid-1',
             history=[ChatMessage(role='user', content='以后请用中文简洁回答')],
@@ -198,10 +198,10 @@ def test_review_session_runs_agent_with_memory_editor_tool(monkeypatch):
     assert fake_lazyllm.globals['agentic_config']['user_preference'] == ''
 
 
-def test_review_session_reports_no_tool_submission(monkeypatch):
-    session_review = _load_session_review_module()
-    ChatMessage = session_review.ChatMessage
-    SessionReviewRequest = session_review.SessionReviewRequest
+def test_review_memory_reports_no_tool_submission(monkeypatch):
+    memory_review = _load_memory_review_module()
+    ChatMessage = memory_review.ChatMessage
+    MemoryReviewRequest = memory_review.MemoryReviewRequest
 
     class FakeModel:
         def __init__(self, *args, **kwargs):
@@ -234,8 +234,8 @@ def test_review_session_reports_no_tool_submission(monkeypatch):
         config=SimpleNamespace(config={'core_api_url': 'http://core', 'review_max_retries': 2}),
     )
 
-    result = session_review.review_session(
-        SessionReviewRequest(
+    result = memory_review.review_memory(
+        MemoryReviewRequest(
             target='memory',
             session_id='sid-1',
             history=[ChatMessage(role='user', content='你好')],

@@ -29,7 +29,7 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
     )
 
     records = []
-    fake_memory_db = ModuleType('lazymind.review.memory.db')
+    fake_memory_db = ModuleType('lazymind.review.memory_review.db')
 
     def fake_insert_memory_review_record(**kwargs):
         records.append(kwargs)
@@ -49,7 +49,7 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, 'lazymind.rewrite.memory', fake_rewrite_memory)
     monkeypatch.setitem(sys.modules, 'lazymind.rewrite.preference', fake_rewrite_preference)
-    monkeypatch.setitem(sys.modules, 'lazymind.review.memory.db', fake_memory_db)
+    monkeypatch.setitem(sys.modules, 'lazymind.review.memory_review.db', fake_memory_db)
     monkeypatch.setattr(
         memory_mod.lazyllm,
         'globals',

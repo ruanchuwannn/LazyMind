@@ -5,16 +5,16 @@ from typing import Any, Dict, List
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from lazymind.review.service.session_review import (
+from lazymind.review.service.memory_review import (
     ChatMessage,
     ReviewTarget,
-    generate_session_review,
+    generate_memory_review,
 )
 
 router = APIRouter()
 
 
-class SessionReviewPayload(BaseModel):
+class MemoryReviewPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     session_id: str = Field(..., description='Backend session ID')
@@ -33,7 +33,7 @@ class SessionReviewPayload(BaseModel):
     )
 
     @model_validator(mode='after')
-    def validate_payload(self) -> 'SessionReviewPayload':
+    def validate_payload(self) -> 'MemoryReviewPayload':
         if not self.session_id.strip():
             raise ValueError("'session_id' must be non-empty.")
         if not any(
@@ -50,8 +50,8 @@ class SessionReviewPayload(BaseModel):
     '/api/chat/memory_review',
     summary='Review backend-provided history for memory or user_preference edits',
 )
-async def memory_review(payload: SessionReviewPayload):
-    result = generate_session_review(
+async def memory_review(payload: MemoryReviewPayload):
+    result = generate_memory_review(
         target=payload.target,
         session_id=payload.session_id,
         history=payload.history,

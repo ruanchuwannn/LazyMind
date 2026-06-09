@@ -4,7 +4,7 @@ from .db import (
     insert_memory_review_record,
 )
 from .prompts import (
-    build_session_review_prompt,
+    build_memory_review_prompt,
 )
 from .utils import (
     is_successful_memory_editor_result,
@@ -15,7 +15,7 @@ from .utils import (
 )
 
 __all__ = [
-    'build_session_review_prompt',
+    'build_memory_review_prompt',
     'is_successful_memory_editor_result',
     'insert_memory_review_record',
     'iter_tool_traces',

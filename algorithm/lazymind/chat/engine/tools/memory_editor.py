@@ -105,7 +105,7 @@ def memory_editor(
     except UnprocessableContentError as exc:
         return tool_error('memory_editor', str(exc))
 
-    from lazymind.review.memory.db import insert_memory_review_record
+    from lazymind.review.memory_review.db import insert_memory_review_record
 
     record = insert_memory_review_record(
         target=storage_target,

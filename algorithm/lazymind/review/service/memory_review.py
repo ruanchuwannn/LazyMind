@@ -5,8 +5,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from lazymind.review.memory.prompts import build_session_review_prompt
-from lazymind.review.memory.utils import (
+from lazymind.review.memory_review.prompts import build_memory_review_prompt
+from lazymind.review.memory_review.utils import (
     memory_editor_submitted,
     reset_agent_tool_trace,
 )
@@ -24,7 +24,7 @@ class ChatMessage(BaseModel):
     content: str = Field(default='', description='Message content')
 
 
-class SessionReviewRequest(BaseModel):
+class MemoryReviewRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     session_id: str = Field(..., description='Backend session ID being reviewed')
@@ -39,7 +39,7 @@ class SessionReviewRequest(BaseModel):
     )
 
     @model_validator(mode='after')
-    def validate_history(self) -> 'SessionReviewRequest':
+    def validate_history(self) -> 'MemoryReviewRequest':
         if not self.session_id.strip():
             raise ValueError("'session_id' must be non-empty.")
         if not any(
@@ -50,7 +50,7 @@ class SessionReviewRequest(BaseModel):
         return self
 
 
-class SessionReviewResult(BaseModel):
+class MemoryReviewResult(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     target: ReviewTarget
@@ -59,7 +59,7 @@ class SessionReviewResult(BaseModel):
     agent_result: str = ''
 
 
-def review_session(request: SessionReviewRequest) -> SessionReviewResult:
+def review_memory(request: MemoryReviewRequest) -> MemoryReviewResult:
     import lazyllm
     from lazyllm import AutoModel
     from lazyllm.tools.fs.client import FS
@@ -68,7 +68,7 @@ def review_session(request: SessionReviewRequest) -> SessionReviewResult:
     from lazymind.config import config as _cfg
     from lazymind.model_config import get_config_path
 
-    prompt = build_session_review_prompt(
+    prompt = build_memory_review_prompt(
         target=request.target,
         current_content=request.current_content,
     )
@@ -104,7 +104,7 @@ def review_session(request: SessionReviewRequest) -> SessionReviewResult:
     )
     agent_result = raw if isinstance(raw, str) else str(raw)
     agent_state = lazyllm.locals.get('_lazyllm_agent', {})
-    return SessionReviewResult(
+    return MemoryReviewResult(
         target=request.target,
         session_id=request.session_id,
         submitted=memory_editor_submitted(agent_state if isinstance(agent_state, dict) else {}),
@@ -112,7 +112,7 @@ def review_session(request: SessionReviewRequest) -> SessionReviewResult:
     )
 
 
-def _init_review_session(
+def _init_memory_review_context(
     session_id: str,
     target: ReviewTarget,
     model_config: Dict[str, Any],
@@ -126,19 +126,19 @@ def _init_review_session(
     inject_model_config(model_config)
 
 
-def generate_session_review(
+def generate_memory_review(
     *,
     target: ReviewTarget,
     session_id: str,
     history: List[ChatMessage],
     current_content: str,
     model_config: Dict[str, Any],
-) -> SessionReviewResult:
-    _init_review_session(session_id, target, model_config)
-    request = SessionReviewRequest(
+) -> MemoryReviewResult:
+    _init_memory_review_context(session_id, target, model_config)
+    request = MemoryReviewRequest(
         target=target,
         session_id=session_id,
         history=history,
         current_content=current_content,
     )
-    return review_session(request)
+    return review_memory(request)
