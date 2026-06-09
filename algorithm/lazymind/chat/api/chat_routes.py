@@ -4,12 +4,36 @@ from fastapi import APIRouter, Body
 from lazymind.chat.config import DEFAULT_CHAT_DATASET
 from lazymind.chat.service.chat_service import handle_chat
 from lazymind.chat.service.component import get_all_tool_groups
+from lazymind.model_config import inject_model_config
+from lazyllm.tools.tool_config_inject import inject_tool_config
 
 router = APIRouter()
 
 
-@router.get('/api/chat/tools', summary='List all tool groups with their methods')
-async def list_chat_tools():
+@router.post('/api/chat/tools', summary='List all tool groups with their methods')
+async def list_chat_tools(
+    llm_config: Annotated[
+        Optional[Dict[str, Any]],
+        Body(
+            description=(
+                'Per-request model configuration. Keys are role names from runtime_models.yaml '
+                '(llm, reranker, embed_main), each with its own config dict '
+                '{source, model, base_url, api_key, skip_auth}.'
+            )
+        ),
+    ] = None,
+    tool_config: Annotated[
+        Optional[Dict[str, Union[str, List[str]]]],
+        Body(
+            description=(
+                'Per-request tool credentials. Format: {tool_name: token} or {tool_name: [token, ...]}. '
+                'For OAuth2 providers (e.g. feishu) pass a valid, unexpired access token.'
+            )
+        ),
+    ] = None,
+):
+    inject_model_config(llm_config)
+    inject_tool_config(tool_config)
     return {'tool_groups': get_all_tool_groups()}
 
 
