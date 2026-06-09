@@ -41,18 +41,14 @@ def _load_review_modules():
         'lazymind.review.memory.utils',
         'lazymind.review.service',
         'lazymind.review.service.session_review',
-        'lazymind.review.prompts',
     ]
     original_modules = {name: sys.modules.get(name) for name in module_names}
 
-    fake_prompts = ModuleType('lazymind.review.prompts')
-    fake_prompts.MEMORY_REVIEW_PROMPT = 'MEMORY REVIEW PROMPT'
     fake_modules = {
         'lazymind': _package('lazymind'),
         'lazymind.review': _package('lazymind.review'),
         'lazymind.review.memory': _package('lazymind.review.memory'),
         'lazymind.review.service': _package('lazymind.review.service'),
-        'lazymind.review.prompts': fake_prompts,
     }
 
     try:
