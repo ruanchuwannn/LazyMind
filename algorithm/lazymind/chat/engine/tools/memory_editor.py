@@ -68,19 +68,7 @@ def memory_editor(
     agentic_config = lazyllm.globals['agentic_config']
     session_id = str(agentic_config['session_id']).strip()
     storage_target = 'user_preference' if raw_target == 'user' else raw_target
-    if raw_target == 'user':
-        current_content = (
-            agentic_config.get('user')
-            or agentic_config.get('user_preference')
-            or agentic_config.get('current_content')
-            or ''
-        )
-    else:
-        current_content = (
-            agentic_config.get(raw_target)
-            or agentic_config.get('current_content')
-            or ''
-        )
+    current_content = agentic_config.get(raw_target) or ''
     operation_payload = [dict(op) for op in operations]
     from lazymind.rewrite.base import (
         UnprocessableContentError,

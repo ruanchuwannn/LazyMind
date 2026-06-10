@@ -2,141 +2,58 @@ from __future__ import annotations
 
 # flake8: noqa: E501,Q000
 
-_MEMORY_REVIEW_LANGUAGE_RULES = (
-    "# Language\n"
-    "- Determine the language of new or rewritten memory/user profile content from `current_content` "
-    "(or existing stored content shown in EXISTING STATE) and the conversation `history` / `llm_chat_history`.\n"
-    "- If current content is non-empty, preserve that language unless the user explicitly asks for another language.\n"
-    "- If current content is empty, use the dominant language of the user's messages in history; Chinese user messages should produce Chinese memory/user profile content.\n"
-    "- Apply this to `replace_text.new` and `replace_all.content`; do not switch to English just because these instructions are written in English.\n\n"
-)
-
 MEMORY_REVIEW_PROMPT = (
-    "Review the conversation above and consider saving durable memory if appropriate.\n\n"
-    "Be conservative with memory changes (target='memory'): save only concise agent working memory that is likely to help in future sessions, "
-    "such as when the discussion happened, what the user and agent discussed, what the user was working on, "
-    "or other session-history facts the agent may need to recall later.\n"
-    "For user profile changes (target='user'): save user-stated identity, role, preferred "
-    "name/nickname, communication tone, language preference, output format, level of detail, and "
-    "taboos. When the user explicitly states 'I like X', 'call me Y', or similar self-descriptions, "
-    "these are intentional identity signals and should be saved.\n\n"
-    "# Prefer skills over memory for workflows\n"
-    "Do NOT save multi-step reusable workflows, troubleshooting procedures, lessons learned, "
-    "tool usage patterns, implementation recipes, or task-specific conventions as memory. "
-    "Those belong in skills. If skill_editor is available, create or update a skill instead. "
-    "If skill_editor is not available, do not save them as memory; reply exactly: Nothing to save.\n\n"
-    "# Quality filter -- do NOT save trivial details\n"
-    "Memory is for genuinely important, non-obvious information only. "
-    "Before saving, ask: is this a concise session-memory fact the agent may need later? "
-    "Do NOT save: obvious code patterns derivable from the repo, workflow notes better represented as skills, "
-    "or anything the user wouldn't need recalled later. "
-    "User-stated identity, preferred names/nicknames, and explicit communication "
-    "preferences are NOT 'trivial details' or 'passing remarks' -- save them as user profile content.\n"
-    "For memory: err on the side of saving too little -- sparse, high-signal memory "
-    "is better than bloated memory full of noise. "
-    "For user profile: when the user explicitly stated a preference about "
-    "themselves, default to saving it.\n\n"
-    f"{_MEMORY_REVIEW_LANGUAGE_RULES}"
-    "# Distinction between memory and user\n"
-    "Call memory_editor(target='memory', operations=[...]) only for: concise agent working-memory notes about the user's ongoing work, "
-    "what was discussed, and other future-relevant session context. The operations must edit the full current memory text.\n"
-    "Call memory_editor(target='user', operations=[...]) for: user identity/role, preferred name/nickname, communication tone, "
-    "language preference, output format, level of detail, or taboos that are stable across many tasks. "
-    "Do NOT save workflow preferences, workflow steps, SOPs, tool sequences, or task procedures as user profile content.\n"
-    "One fact must live in ONLY one place. If a fact could fit either target, "
-    "choose the more specific one -- do NOT duplicate across both. "
-    "Review both current memory and user profile content before writing; "
-    "if the same fact already exists in the wrong target, move it and clean up the old location.\n\n"
-    "# Incremental update rules (CRITICAL)\n"
-    "- If existing content is provided below in current content / EXISTING STATE, you MUST read it first.\n"
-    "- Base your operations on the existing content; do NOT propose a blind rewrite from scratch.\n"
-    "- Retain all still-valid existing entries as-is.\n"
-    "- Add new content only for newly discovered memory events or explicit updates to older memory.\n"
-    "- When new information conflicts with existing entries, the new takes precedence "
-    "unless the user explicitly stated the current state is temporary.\n"
-    "- Remove or update only what is proven outdated or wrong; express the change with replace_text or replace_all operations.\n"
-    "- Keep the overall structure/format of the existing content; do not reformat unnecessarily.\n"
-    "- If no changes are needed, do not call memory_editor at all.\n"
+    "# Task\n"
+    "Review the conversation history and decide whether to propose one durable update to memory or user profile.\n"
+    "Make at most one memory_editor call. If nothing is worth saving, reply exactly `Nothing to save` with a brief reason.\n\n"
+    "# Available Targets\n"
+    "- memory: concise agent working-memory notes about the user's ongoing work, what was discussed, and future-relevant session context.\n"
+    "- user: stable user profile/preferences such as identity, role, preferred name, communication tone, language preference, output format, level of detail, and taboos.\n"
+    "Choose the single most appropriate target for any durable update. Do not duplicate one fact across both targets.\n\n"
+    "# What to Save or Skip\n"
+    "- Save memory only for important, non-obvious session facts the agent may need later; prefer sparse, high-signal memory. When in doubt, do not save memory.\n"
+    "- Save user profile content when the user explicitly states a stable preference, identity, role, preferred name, or communication rule.\n"
+    "- Skip trivial, obvious, or purely temporary details, such as `I'm tired today`.\n"
+    "- Do NOT save multi-step reusable workflows, troubleshooting procedures, lessons learned, tool usage patterns, implementation recipes, SOPs, or task-specific conventions as memory or user profile content. Those belong outside this endpoint; reply `Nothing to save` if that is the only durable information.\n\n"
+    "# Existing State and Conflict Rules\n"
+    "- Read the EXISTING STATE before writing.\n"
+    "- Base operations on the selected target's existing content; do NOT propose a blind rewrite from scratch.\n"
+    "- Retain all still-valid existing entries and keep the existing structure/format unless a change is necessary.\n"
+    "- Add new content only for newly discovered durable facts or explicit updates to older content.\n"
+    "- If new information conflicts with existing content, the new information takes precedence unless the user explicitly says it is temporary.\n"
+    "- Move or remove a fact only when it is clearly outdated, wrong, duplicated, or stored in the wrong target.\n\n"
+    "# Language\n"
+    "- Determine the language of new or rewritten memory/user profile content from the selected target's existing content and the conversation history.\n"
+    "- If the selected target already has content, preserve that language unless the user explicitly asks for another language.\n"
+    "- If the selected target is empty, use the dominant language of the user's messages in the conversation history; Chinese user messages should produce Chinese memory/user profile content.\n"
+    "- Apply this to `replace_text.new` and `replace_all.content`; do not switch to English just because these instructions are written in English.\n\n"
+    "# Tool Contract\n"
+    "- Use only memory_editor; do not call any other tool.\n"
     "- memory_editor requires exactly target and operations.\n"
-    "- Prefer replace_text with exact old text copied from current content. Use replace_all only when current content is empty or a full rewrite is truly necessary.\n"
-    "When in doubt about memory, do NOT save -- only write when you are confident. "
-    "For user profile content: if the user explicitly stated a preference or identity, save it. "
-    "Only skip user profile content when the information is clearly ephemeral "
-    "(e.g., 'I'm tired today').\n"
-    "The outdated/wrong removal-or-correction gate above is specific to memory and user profile content; "
-    "do not use memory review as a substitute for skill creation.\n"
-    "If there is a worthwhile memory or user profile change, directly call memory_editor with operations. "
-    "If nothing is worth saving or updating, reply with `Nothing to save` and a brief reason explaining why no "
-    "memory or user update is warranted."
+    "- For agent working memory, call memory_editor(target='memory', operations=[...]).\n"
+    "- For user profile/preferences, call memory_editor(target='user', operations=[...]).\n"
+    "- Supported operation: replace_text: {\"op\": \"replace_text\", \"old\": \"...\", \"new\": \"...\"}; `old` MUST be an exact substring copied from the selected target's current content.\n"
+    "- Supported operation: replace_all: {\"op\": \"replace_all\", \"content\": \"...\"}; `content` is the full replacement text for the selected target.\n"
+    "- Prefer replace_text with exact old text copied from the selected target's existing content.\n"
+    "- Use replace_all only when the selected target is empty, no exact substring can safely anchor the edit, or the content needs global deduplication/conflict resolution/reorganization.\n"
+    "- For adding one item to non-empty content, replace the smallest exact existing section or block with the same block plus the new item.\n"
+    "- The operations are applied to the selected target content below, and the edited full text is written to the memory_review table for human review.\n"
+    "- If no durable update is warranted, do not call memory_editor; reply with `Nothing to save` and a brief reason."
 )
 
 
 def build_memory_review_prompt(
     *,
-    target: str,
-    current_content: str,
+    memory: str,
+    user: str,
 ) -> str:
-    if target == 'memory':
-        target_instruction = (
-            'This backend-triggered review is ONLY for agent working memory. '
-            "If saving is warranted, call memory_editor(target='memory', operations=[...]). "
-            "Do not call memory_editor with target='user'."
-        )
-    else:
-        target_instruction = (
-            'This backend-triggered review is ONLY for user profile / preference content. '
-            "If saving is warranted, call memory_editor(target='user', operations=[...]). "
-            "Do not call memory_editor with target='memory'."
-        )
-
-    existing_label = (
-        'Current agent working memory'
-        if target == 'memory'
-        else 'Current user profile'
-    )
     return (
         f'{MEMORY_REVIEW_PROMPT}\n\n'
-        '# Backend-triggered target constraint\n'
-        f'{target_instruction}\n'
-        'For this endpoint, do not call skill_editor, get_skill, vocab_learn, '
-        'or any tool except memory_editor. Use only target and operations.\n\n'
-        '# Language\n'
-        '- Determine the language of new or rewritten memory/user profile content '
-        'from current_content and llm_chat_history.\n'
-        '- If current_content is non-empty, preserve that language unless the user '
-        'explicitly asks for another language.\n'
-        "- If current_content is empty, use the dominant language of the user's "
-        'messages in llm_chat_history; Chinese user messages should produce '
-        'Chinese memory/user profile content.\n'
-        '- Apply this to replace_text.new and replace_all.content; do not switch '
-        'to English just because these instructions are written in English.\n\n'
-        'Do NOT save multi-step reusable workflows, troubleshooting procedures, '
-        'lessons learned, tool usage patterns, implementation recipes, SOPs, '
-        'or general task conventions as memory or user profile content. Those belong '
-        'in skills, but this endpoint must only submit memory edit operations.\n\n'
-        '# Required memory edit operation output\n'
-        'When a durable update is warranted, output exactly one memory_editor tool call '
-        'with an operations array. Supported operations are:\n'
-        '- replace_text: {"op": "replace_text", "old": "...", "new": "..."}; '
-        "'old' MUST be an exact substring copied from the current content.\n"
-        '- replace_all: {"op": "replace_all", "content": "..."}; use this '
-        'only when current content is empty, or when the update truly requires '
-        'rewriting the full target text.\n'
-        'Prefer replace_text whenever current content is non-empty. For adding '
-        'a new entry to existing content, replace the smallest exact existing '
-        'section or block with the same block plus the new entry. Do not use '
-        'replace_all merely because you are adding one item. Use replace_all '
-        'only if no exact substring can safely anchor the edit, or the content '
-        'needs global deduplication/conflict resolution/reorganization.\n'
-        'The operations are applied to the current content below, and the edited '
-        'full text is written to the memory_review table for human review. '
-        'If no durable update is warranted, do not call memory_editor; reply with '
-        '`Nothing to save` and a brief reason.\n\n'
-        '--- CURRENT CONTENT ---\n'
-        f'## {existing_label}\n{current_content or ""}\n'
-        '--- END CURRENT CONTENT ---\n\n'
-        'The conversation to review is provided as llm_chat_history by the caller. '
-        'Use that history as the source of truth.'
+        '--- EXISTING STATE ---\n'
+        f'## Current agent working memory\n{memory or ""}\n\n'
+        f'## Current user profile\n{user or ""}\n'
+        '--- END EXISTING STATE ---\n\n'
+        'Use the conversation history as the source of truth for this review.'
     )
 
 

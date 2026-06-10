@@ -3,15 +3,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal
 from uuid import uuid4
 
+import lazyllm
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from lazymind.model_config import inject_model_config
 from lazymind.review.memory_review.prompts import build_memory_review_prompt
-from lazymind.review.memory_review.utils import (
-    memory_editor_submitted,
-    reset_agent_tool_trace,
-)
-
-ReviewTarget = Literal['memory', 'user']
 
 
 class ChatMessage(BaseModel):
@@ -28,14 +24,17 @@ class MemoryReviewRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     session_id: str = Field(..., description='Backend session ID being reviewed')
-    target: ReviewTarget = Field(..., description='Review target')
     history: List[ChatMessage] = Field(
         default_factory=list,
         description='Chat history passed by backend for review',
     )
-    current_content: str = Field(
+    memory: str = Field(
         default='',
-        description='Current full memory or user profile text to edit',
+        description='Current full agent memory text to edit',
+    )
+    user: str = Field(
+        default='',
+        description='Current full user profile text to edit',
     )
 
     @model_validator(mode='after')
@@ -53,36 +52,29 @@ class MemoryReviewRequest(BaseModel):
 class MemoryReviewResult(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    target: ReviewTarget
-    session_id: str
-    submitted: bool = False
-    agent_result: str = ''
+    status: Literal['success', 'failed']
 
 
 def review_memory(request: MemoryReviewRequest) -> MemoryReviewResult:
-    import lazyllm
     from lazyllm import AutoModel
     from lazyllm.tools.fs.client import FS
 
     from lazymind.chat.engine.tools import memory_editor
+    from lazymind.chat.service.component.history import normalize_history_for_agent
     from lazymind.config import config as _cfg
     from lazymind.model_config import get_config_path
 
     prompt = build_memory_review_prompt(
-        target=request.target,
-        current_content=request.current_content,
+        memory=request.memory,
+        user=request.user,
     )
 
     config = {
         'session_id': request.session_id,
         'core_api_url': _cfg['core_api_url'],
-        'current_content': request.current_content,
+        'memory': request.memory,
+        'user': request.user,
     }
-    if request.target == 'memory':
-        config['memory'] = request.current_content
-    else:
-        config['user'] = request.current_content
-        config['user_preference'] = request.current_content
     lazyllm.globals['agentic_config'] = config
 
     llm = AutoModel(model='llm', config=get_config_path())
@@ -97,48 +89,32 @@ def review_memory(request: MemoryReviewRequest) -> MemoryReviewResult:
         enable_builtin_tools=False,
         force_summarize=True,
     )
-    reset_agent_tool_trace(lazyllm)
-    raw = review_agent(
+    lazyllm.locals['_lazyllm_agent'] = {}
+    review_agent(
         prompt,
-        llm_chat_history=[message.model_dump() for message in request.history],
+        llm_chat_history=normalize_history_for_agent(
+            [message.model_dump() for message in request.history]
+        ),
     )
-    agent_result = raw if isinstance(raw, str) else str(raw)
-    agent_state = lazyllm.locals.get('_lazyllm_agent', {})
-    return MemoryReviewResult(
-        target=request.target,
-        session_id=request.session_id,
-        submitted=memory_editor_submitted(agent_state if isinstance(agent_state, dict) else {}),
-        agent_result=agent_result,
-    )
-
-
-def _init_memory_review_context(
-    session_id: str,
-    target: ReviewTarget,
-    model_config: Dict[str, Any],
-) -> None:
-    import lazyllm
-    from lazymind.model_config import inject_model_config
-
-    sid = f'{target}_review_{session_id.strip() or uuid4().hex}'
-    lazyllm.globals._init_sid(sid=sid)
-    lazyllm.locals._init_sid(sid=sid)
-    inject_model_config(model_config)
+    return MemoryReviewResult(status='success')
 
 
 def generate_memory_review(
     *,
-    target: ReviewTarget,
     session_id: str,
     history: List[ChatMessage],
-    current_content: str,
+    memory: str,
+    user: str,
     model_config: Dict[str, Any],
 ) -> MemoryReviewResult:
-    _init_memory_review_context(session_id, target, model_config)
+    sid = f'memory_review_{session_id.strip() or uuid4().hex}'
+    lazyllm.globals._init_sid(sid=sid)
+    lazyllm.locals._init_sid(sid=sid)
+    inject_model_config(model_config)
     request = MemoryReviewRequest(
-        target=target,
         session_id=session_id,
         history=history,
-        current_content=current_content,
+        memory=memory,
+        user=user,
     )
     return review_memory(request)
