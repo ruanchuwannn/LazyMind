@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import json
-import shlex
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL, Engine
+from sqlalchemy.engine import Engine
 
+from lazymind.common.postgres import normalize_postgres_connection_url
 from lazymind.config import config as _cfg
 
-MEMORY_REVIEW_SCHEMA = 'public'
 MEMORY_REVIEW_TABLE = 'memory_review'
-MEMORY_REVIEW_TABLE_QUALIFIED = f'{MEMORY_REVIEW_SCHEMA}.{MEMORY_REVIEW_TABLE}'
 
 _DB_URL_ENV_HINT = (
     'LAZYMIND_CORE_DATABASE_URL, LAZYMIND_ACL_DB_DSN, or LAZYMIND_DATABASE_URL'
@@ -24,64 +21,8 @@ _engine_cache: Dict[str, Engine] = {}
 _engine_cache_lock = threading.Lock()
 
 
-def _ensure_postgres_driver(url: str) -> str:
-    normalized = url.strip()
-    parts = urlsplit(normalized)
-    scheme = (parts.scheme or '').lower()
-    if scheme in {'postgresql', 'postgres'}:
-        return urlunsplit((
-            f'{scheme}+psycopg2',
-            parts.netloc,
-            parts.path,
-            parts.query,
-            parts.fragment,
-        ))
-    return normalized
-
-
-def _dsn_to_sqlalchemy_url(dsn: str) -> str:
-    if '://' in dsn:
-        return _ensure_postgres_driver(dsn)
-
-    parts: Dict[str, str] = {}
-    for token in shlex.split(dsn):
-        if '=' not in token:
-            continue
-        key, value = token.split('=', 1)
-        parts[key.strip()] = value.strip()
-
-    if not parts:
-        raise ValueError('invalid database dsn')
-    if not (parts.get('host') or '').strip():
-        raise ValueError('database host is required')
-    database = (parts.get('dbname') or parts.get('database') or '').strip()
-    if not database:
-        raise ValueError('database name is required')
-    try:
-        port = int(parts['port']) if parts.get('port') else 5432
-    except ValueError as exc:
-        raise ValueError('invalid database port') from exc
-
-    return str(URL.create(
-        'postgresql+psycopg2',
-        username=parts.get('user') or None,
-        password=parts.get('password') or None,
-        host=parts['host'],
-        port=port,
-        database=database,
-    ))
-
-
-def _normalize_pg_url(url: Optional[str] = None, dsn: Optional[str] = None) -> str:
-    if dsn and dsn.strip():
-        return _dsn_to_sqlalchemy_url(dsn)
-    if url and url.strip():
-        return _ensure_postgres_driver(url)
-    raise RuntimeError(f'postgres connection config is required: {_DB_URL_ENV_HINT}')
-
-
 def _get_engine(*, url: Optional[str] = None, dsn: Optional[str] = None) -> Engine:
-    engine_url = _normalize_pg_url(url=url, dsn=dsn)
+    engine_url = normalize_postgres_connection_url(url=url, dsn=dsn)
     engine = _engine_cache.get(engine_url)
     if engine is not None:
         return engine
@@ -141,7 +82,7 @@ def insert_memory_review_record(
         conn.execute(
             text(
                 f"""
-                INSERT INTO {MEMORY_REVIEW_TABLE_QUALIFIED} (
+                INSERT INTO {MEMORY_REVIEW_TABLE} (
                     id,
                     target,
                     session_id,
