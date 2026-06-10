@@ -8,9 +8,8 @@ from lazyllm import LOG
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lazymind.review.service.memory_review import (
-    ChatMessage,
     MemoryReviewResult,
-    generate_memory_review,
+    review_memory,
 )
 
 router = APIRouter()
@@ -19,18 +18,18 @@ router = APIRouter()
 class MemoryReviewPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    session_id: str = Field(..., description='Backend session ID')
-    history: List[ChatMessage] = Field(
+    session_id: str = Field(..., description='Backend session ID being reviewed')
+    history: List[Dict[str, Any]] = Field(
         default_factory=list,
         description='Chat history passed by backend for review',
     )
     memory: str = Field(
         default='',
-        description='Current full agent memory content to edit',
+        description='Current full agent memory text to edit',
     )
     user: str = Field(
         default='',
-        description='Current full user profile content to edit',
+        description='Current full user profile text to edit',
     )
     llm_config: Dict[str, Any] = Field(
         ...,
@@ -42,7 +41,8 @@ class MemoryReviewPayload(BaseModel):
         if not self.session_id.strip():
             raise ValueError("'session_id' must be non-empty.")
         if not any(
-            message.role == 'user' and message.content.strip()
+            message.get('role') == 'user'
+            and str(message.get('content', '')).strip()
             for message in self.history
         ):
             raise ValueError("'history' must contain at least one user message.")
@@ -58,12 +58,12 @@ class MemoryReviewPayload(BaseModel):
 )
 async def memory_review(payload: MemoryReviewPayload):
     try:
-        result = generate_memory_review(
+        result = review_memory(
             session_id=payload.session_id,
             history=payload.history,
             memory=payload.memory,
             user=payload.user,
-            model_config=payload.llm_config,
+            llm_config=payload.llm_config,
         )
     except Exception as exc:
         LOG.exception(f'[MemoryReview] memory review failed: {exc}')

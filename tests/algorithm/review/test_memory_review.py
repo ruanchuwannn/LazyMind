@@ -22,6 +22,11 @@ def _package(name: str) -> ModuleType:
     return module
 
 
+class _SidDict(dict):
+    def _init_sid(self, sid: str) -> None:
+        self['_sid'] = sid
+
+
 def _load_module(module_name: str, module_path: Path):
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     assert spec is not None
@@ -35,7 +40,17 @@ def _load_module(module_name: str, module_path: Path):
 def _load_review_modules():
     module_names = [
         'lazyllm',
+        'lazyllm.tools',
+        'lazyllm.tools.fs',
+        'lazyllm.tools.fs.client',
         'lazymind',
+        'lazymind.chat',
+        'lazymind.chat.engine',
+        'lazymind.chat.engine.tools',
+        'lazymind.chat.service',
+        'lazymind.chat.service.component',
+        'lazymind.chat.service.component.history',
+        'lazymind.config',
         'lazymind.model_config',
         'lazymind.review',
         'lazymind.review.memory_review',
@@ -52,11 +67,31 @@ def _load_review_modules():
         'lazymind.review.service': _package('lazymind.review.service'),
     }
     fake_lazyllm = ModuleType('lazyllm')
-    fake_lazyllm.globals = {}
-    fake_lazyllm.locals = {}
+    fake_lazyllm.AutoModel = object
+    fake_lazyllm.globals = _SidDict()
+    fake_lazyllm.locals = _SidDict()
+    fake_fs_client = ModuleType('lazyllm.tools.fs.client')
+    fake_fs_client.FS = object
+    fake_tools_pkg = ModuleType('lazymind.chat.engine.tools')
+    fake_tools_pkg.memory_editor = lambda *args, **kwargs: None
+    fake_history = ModuleType('lazymind.chat.service.component.history')
+    fake_history.normalize_history_for_agent = lambda history: history
+    fake_config = ModuleType('lazymind.config')
+    fake_config.config = {'core_api_url': 'http://core', 'review_max_retries': 2}
     fake_model_config = ModuleType('lazymind.model_config')
+    fake_model_config.get_config_path = lambda: '/tmp/config.yaml'
     fake_model_config.inject_model_config = lambda _config: None
     fake_modules['lazyllm'] = fake_lazyllm
+    fake_modules['lazyllm.tools'] = _package('lazyllm.tools')
+    fake_modules['lazyllm.tools.fs'] = _package('lazyllm.tools.fs')
+    fake_modules['lazyllm.tools.fs.client'] = fake_fs_client
+    fake_modules['lazymind.chat'] = _package('lazymind.chat')
+    fake_modules['lazymind.chat.engine'] = _package('lazymind.chat.engine')
+    fake_modules['lazymind.chat.engine.tools'] = fake_tools_pkg
+    fake_modules['lazymind.chat.service'] = _package('lazymind.chat.service')
+    fake_modules['lazymind.chat.service.component'] = _package('lazymind.chat.service.component')
+    fake_modules['lazymind.chat.service.component.history'] = fake_history
+    fake_modules['lazymind.config'] = fake_config
     fake_modules['lazymind.model_config'] = fake_model_config
 
     try:
@@ -85,37 +120,38 @@ def _load_memory_review_module():
     return _load_review_modules().memory_review
 
 
-def _install_runtime_modules(
+def _patch_runtime_bindings(
     monkeypatch,
+    memory_review,
     *,
-    tools: ModuleType,
-    config: Any,
+    lazyllm_module,
+    auto_model,
+    fs,
+    memory_editor,
+    config: dict[str, Any],
+    get_config_path=None,
+    inject_model_config=None,
     normalize_history_for_agent=None,
 ) -> None:
+    if get_config_path is None:
+        get_config_path = lambda: '/tmp/config.yaml'
+    if inject_model_config is None:
+        inject_model_config = lambda _config: None
     if normalize_history_for_agent is None:
         def normalize_history_for_agent(history):
             return history
 
-    monkeypatch.setitem(sys.modules, 'lazymind', _package('lazymind'))
-    monkeypatch.setitem(sys.modules, 'lazymind.chat', _package('lazymind.chat'))
-    monkeypatch.setitem(sys.modules, 'lazymind.chat.engine', _package('lazymind.chat.engine'))
-    monkeypatch.setitem(sys.modules, 'lazymind.chat.engine.tools', tools)
-    monkeypatch.setitem(sys.modules, 'lazymind.chat.service', _package('lazymind.chat.service'))
-    monkeypatch.setitem(
-        sys.modules,
-        'lazymind.chat.service.component',
-        _package('lazymind.chat.service.component'),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        'lazymind.chat.service.component.history',
-        SimpleNamespace(normalize_history_for_agent=normalize_history_for_agent),
-    )
-    monkeypatch.setitem(sys.modules, 'lazymind.config', config)
-    monkeypatch.setitem(
-        sys.modules,
-        'lazymind.model_config',
-        SimpleNamespace(get_config_path=lambda: '/tmp/config.yaml'),
+    monkeypatch.setattr(memory_review, 'lazyllm', lazyllm_module)
+    monkeypatch.setattr(memory_review, 'AutoModel', auto_model)
+    monkeypatch.setattr(memory_review, 'FS', fs)
+    monkeypatch.setattr(memory_review, 'memory_editor', memory_editor)
+    monkeypatch.setattr(memory_review, '_cfg', config)
+    monkeypatch.setattr(memory_review, 'get_config_path', get_config_path)
+    monkeypatch.setattr(memory_review, 'inject_model_config', inject_model_config)
+    monkeypatch.setattr(
+        memory_review,
+        'normalize_history_for_agent',
+        normalize_history_for_agent,
     )
 
 
@@ -169,8 +205,6 @@ def test_user_review_prompt_excludes_session_history():
 
 def test_review_memory_runs_agent_with_memory_editor_tool(monkeypatch):
     memory_review = _load_memory_review_module()
-    ChatMessage = memory_review.ChatMessage
-    MemoryReviewRequest = memory_review.MemoryReviewRequest
 
     calls = {}
 
@@ -188,41 +222,39 @@ def test_review_memory_runs_agent_with_memory_editor_tool(monkeypatch):
             return '已保存。'
 
     fake_lazyllm = SimpleNamespace(
-        AutoModel=FakeModel,
-        globals={},
-        locals={'_lazyllm_agent': {'completed': [{'stale': True}]}},
+        globals=_SidDict(),
+        locals=_SidDict({'_lazyllm_agent': {'completed': [{'stale': True}]}}),
         tools=SimpleNamespace(agent=SimpleNamespace(ReactAgent=FakeReactAgent)),
     )
-    fake_fs_module = SimpleNamespace(FS=object)
-    fake_tools_pkg = ModuleType('lazymind.chat.engine.tools')
 
     def memory_editor(*args, **kwargs):
         return None
-
-    fake_tools_pkg.memory_editor = memory_editor
-    fake_config = SimpleNamespace(config={'core_api_url': 'http://core', 'review_max_retries': 2})
-    monkeypatch.setitem(sys.modules, 'lazyllm', fake_lazyllm)
-    monkeypatch.setitem(sys.modules, 'lazyllm.tools.fs.client', fake_fs_module)
-    monkeypatch.setattr(memory_review, 'lazyllm', fake_lazyllm)
 
     def normalize_history_for_agent(history):
         calls['normalizer_input'] = history
         return [{'role': 'user', 'content': 'normalized'}]
 
-    _install_runtime_modules(
+    def inject_model_config(config):
+        calls['model_config'] = config
+
+    _patch_runtime_bindings(
         monkeypatch,
-        tools=fake_tools_pkg,
-        config=fake_config,
+        memory_review,
+        lazyllm_module=fake_lazyllm,
+        auto_model=FakeModel,
+        fs=object,
+        memory_editor=memory_editor,
+        config={'core_api_url': 'http://core', 'review_max_retries': 2},
+        inject_model_config=inject_model_config,
         normalize_history_for_agent=normalize_history_for_agent,
     )
 
     result = memory_review.review_memory(
-        MemoryReviewRequest(
-            session_id='sid-1',
-            history=[ChatMessage(role='user', content='以后请用中文简洁回答')],
-            memory='旧记忆',
-            user='旧用户画像',
-        )
+        session_id='sid-1',
+        history=[{'role': 'user', 'content': '以后请用中文简洁回答'}],
+        memory='旧记忆',
+        user='旧用户画像',
+        llm_config={'llm': {'model': 'test'}},
     )
 
     assert result.model_dump() == {'status': 'success'}
@@ -232,13 +264,12 @@ def test_review_memory_runs_agent_with_memory_editor_tool(monkeypatch):
     assert fake_lazyllm.globals['agentic_config']['session_id'] == 'sid-1'
     assert fake_lazyllm.globals['agentic_config']['memory'] == '旧记忆'
     assert fake_lazyllm.globals['agentic_config']['user'] == '旧用户画像'
+    assert calls['model_config'] == {'llm': {'model': 'test'}}
     assert 'user_preference' not in fake_lazyllm.globals['agentic_config']
 
 
 def test_review_memory_returns_success_when_no_tool_submission(monkeypatch):
     memory_review = _load_memory_review_module()
-    ChatMessage = memory_review.ChatMessage
-    MemoryReviewRequest = memory_review.MemoryReviewRequest
 
     class FakeModel:
         def __init__(self, *args, **kwargs):
@@ -252,33 +283,30 @@ def test_review_memory_returns_success_when_no_tool_submission(monkeypatch):
             return 'Nothing to save.'
 
     fake_lazyllm = SimpleNamespace(
-        AutoModel=FakeModel,
-        globals={},
-        locals={'_lazyllm_agent': {}},
+        globals=_SidDict(),
+        locals=_SidDict({'_lazyllm_agent': {}}),
         tools=SimpleNamespace(agent=SimpleNamespace(ReactAgent=FakeReactAgent)),
     )
-    monkeypatch.setitem(sys.modules, 'lazyllm', fake_lazyllm)
-    monkeypatch.setitem(sys.modules, 'lazyllm.tools.fs.client', SimpleNamespace(FS=object))
-    monkeypatch.setattr(memory_review, 'lazyllm', fake_lazyllm)
-    fake_tools_pkg = ModuleType('lazymind.chat.engine.tools')
 
     def memory_editor(*args, **kwargs):
         return None
 
-    fake_tools_pkg.memory_editor = memory_editor
-    _install_runtime_modules(
+    _patch_runtime_bindings(
         monkeypatch,
-        tools=fake_tools_pkg,
-        config=SimpleNamespace(config={'core_api_url': 'http://core', 'review_max_retries': 2}),
+        memory_review,
+        lazyllm_module=fake_lazyllm,
+        auto_model=FakeModel,
+        fs=object,
+        memory_editor=memory_editor,
+        config={'core_api_url': 'http://core', 'review_max_retries': 2},
     )
 
     result = memory_review.review_memory(
-        MemoryReviewRequest(
-            session_id='sid-1',
-            history=[ChatMessage(role='user', content='你好')],
-            memory='',
-            user='',
-        )
+        session_id='sid-1',
+        history=[{'role': 'user', 'content': '你好'}],
+        memory='',
+        user='',
+        llm_config={'llm': {'model': 'test'}},
     )
 
     assert result.model_dump() == {'status': 'success'}
