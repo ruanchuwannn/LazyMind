@@ -58,6 +58,27 @@ def _get_memory_review_conn() -> Engine:
     return _get_engine(url=url, dsn=dsn)
 
 
+def is_valid_memory_review_session_id(session_id: str) -> bool:
+    session_id = str(session_id or '').strip()
+    if not session_id:
+        return False
+
+    engine = _get_memory_review_conn()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM resource_session_snapshots
+                WHERE session_id = :session_id
+                LIMIT 1
+                """
+            ),
+            {'session_id': session_id},
+        ).first()
+    return row is not None
+
+
 def insert_memory_review_record(
     *,
     target: str,

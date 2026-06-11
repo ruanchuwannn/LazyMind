@@ -7,10 +7,8 @@ from fastapi.responses import JSONResponse
 from lazyllm import LOG
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from lazymind.review.service.memory_review import (
-    MemoryReviewResult,
-    review_memory,
-)
+from lazymind.review.memory_review.db import is_valid_memory_review_session_id
+from lazymind.review.service.memory_review import MemoryReviewResult, review_memory
 
 router = APIRouter()
 
@@ -58,6 +56,9 @@ class MemoryReviewPayload(BaseModel):
 )
 async def memory_review(payload: MemoryReviewPayload):
     try:
+        if not is_valid_memory_review_session_id(payload.session_id):
+            return JSONResponse(status_code=422, content={'status': 'failed'})
+
         result = review_memory(
             session_id=payload.session_id,
             history=payload.history,
