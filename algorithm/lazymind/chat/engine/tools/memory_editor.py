@@ -46,6 +46,14 @@ def memory_editor(
         target: Which buffer the edit operations belong to. ``'memory'`` is the
             agent's own working memory about the user's ongoing context and
             prior discussions; ``'user'`` is the user profile / preference text.
+            For ``'user'``, the edited full text must start with YAML
+            frontmatter delimited by ``---`` containing ``agent_persona``,
+            ``user_address``, and ``response_style``, followed by Markdown body
+            content. ``response_style`` must be empty or exactly one of
+            ``简洁``, ``详细``, ``幽默``, ``正式``, ``concise``, ``detailed``,
+            ``humorous``, or ``formal``; use the Chinese values for Chinese
+            user language and the English values otherwise. Write language,
+            formatting, and workflow preferences in the Markdown body.
         operations: Ordered JSON edit operations. Supported operations:
 
             - ``{"op": "replace_text", "old": "...", "new": "..."}``:

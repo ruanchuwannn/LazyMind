@@ -26,6 +26,10 @@ from .skill_validation import (
     validate_skill_content,
     validate_skill_name,
 )
+from .user_preference_validation import (
+    parse_user_preference_frontmatter,
+    validate_user_preference_content,
+)
 from .suggestion import (
     Suggestion,
     dump_suggestion,
@@ -91,6 +95,7 @@ __all__ = [
     'normalize_skill_category',
     'opensearch_search',
     'parse_skill_frontmatter',
+    'parse_user_preference_frontmatter',
     'post_core_api',
     'prepare_vocab_candidates',
     'resolve_index',
@@ -106,4 +111,5 @@ __all__ = [
     'tool_success',
     'validate_skill_content',
     'validate_skill_name',
+    'validate_user_preference_content',
 ]
