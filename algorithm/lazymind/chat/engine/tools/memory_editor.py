@@ -74,7 +74,7 @@ def memory_editor(
         )
 
     agentic_config = lazyllm.globals['agentic_config']
-    session_id = str(agentic_config['session_id']).strip()
+    user_id = str(agentic_config.get('user_id') or '').strip()
     storage_target = 'user_preference' if raw_target == 'user' else raw_target
     current_content = agentic_config.get(raw_target) or ''
     operation_payload = [dict(op) for op in operations]
@@ -105,7 +105,7 @@ def memory_editor(
 
     record = insert_memory_review_record(
         target=storage_target,
-        session_id=session_id,
+        user_id=user_id,
         source_content=current_content,
         content=edited_content,
         operations=operation_payload,

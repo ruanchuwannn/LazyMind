@@ -23,13 +23,13 @@ class MemoryReviewResult(BaseModel):
 
 def review_memory(
     *,
-    session_id: str,
+    user_id: str,
     history: List[Dict[str, Any]],
     memory: str,
     user: str,
     llm_config: Dict[str, Any],
 ) -> MemoryReviewResult:
-    sid = f'memory_review_{session_id.strip() or uuid4().hex}'
+    sid = f'memory_review_{user_id.strip() or uuid4().hex}'
     lazyllm.globals._init_sid(sid=sid)
     lazyllm.locals._init_sid(sid=sid)
     inject_model_config(llm_config)
@@ -40,7 +40,7 @@ def review_memory(
     )
 
     config = {
-        'session_id': session_id,
+        'user_id': user_id,
         'core_api_url': _cfg['core_api_url'],
         'memory': memory,
         'user': user,

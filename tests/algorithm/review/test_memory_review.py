@@ -267,7 +267,7 @@ def test_review_memory_runs_agent_with_memory_editor_tool(monkeypatch):
     )
 
     result = memory_review.review_memory(
-        session_id='sid-1',
+        user_id='user-1',
         history=[{'role': 'user', 'content': '以后请用中文简洁回答'}],
         memory='旧记忆',
         user='旧用户画像',
@@ -278,7 +278,7 @@ def test_review_memory_runs_agent_with_memory_editor_tool(monkeypatch):
     assert [tool.__name__ for tool in calls['agent_kwargs']['tools']] == ['memory_editor']
     assert calls['normalizer_input'] == [{'role': 'user', 'content': '以后请用中文简洁回答'}]
     assert calls['history'] == [{'role': 'user', 'content': 'normalized'}]
-    assert fake_lazyllm.globals['agentic_config']['session_id'] == 'sid-1'
+    assert fake_lazyllm.globals['agentic_config']['user_id'] == 'user-1'
     assert fake_lazyllm.globals['agentic_config']['memory'] == '旧记忆'
     assert fake_lazyllm.globals['agentic_config']['user'] == '旧用户画像'
     assert calls['model_config'] == {'llm': {'model': 'test'}}
@@ -319,7 +319,7 @@ def test_review_memory_returns_success_when_no_tool_submission(monkeypatch):
     )
 
     result = memory_review.review_memory(
-        session_id='sid-1',
+        user_id='user-1',
         history=[{'role': 'user', 'content': '你好'}],
         memory='',
         user='',

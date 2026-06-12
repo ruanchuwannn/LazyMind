@@ -7,7 +7,6 @@ from fastapi.responses import JSONResponse
 from lazyllm import LOG
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from lazymind.review.memory_review.db import is_valid_memory_review_session_id
 from lazymind.review.service.memory_review import MemoryReviewResult, review_memory
 
 router = APIRouter()
@@ -16,7 +15,7 @@ router = APIRouter()
 class MemoryReviewPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    session_id: str = Field(..., description='Backend session ID being reviewed')
+    user_id: str = Field(..., description='Backend user ID being reviewed')
     history: List[Dict[str, Any]] = Field(
         default_factory=list,
         description='Chat history passed by backend for review',
@@ -36,8 +35,9 @@ class MemoryReviewPayload(BaseModel):
 
     @model_validator(mode='after')
     def validate_payload(self) -> 'MemoryReviewPayload':
-        if not self.session_id.strip():
-            raise ValueError("'session_id' must be non-empty.")
+        self.user_id = str(self.user_id).strip()
+        if not self.user_id:
+            raise ValueError("'user_id' must be non-empty.")
         if not any(
             message.get('role') == 'user'
             and str(message.get('content', '')).strip()
@@ -56,11 +56,8 @@ class MemoryReviewPayload(BaseModel):
 )
 async def memory_review(payload: MemoryReviewPayload):
     try:
-        if not is_valid_memory_review_session_id(payload.session_id):
-            return JSONResponse(status_code=422, content={'status': 'failed'})
-
         result = review_memory(
-            session_id=payload.session_id,
+            user_id=payload.user_id,
             history=payload.history,
             memory=payload.memory,
             user=payload.user,

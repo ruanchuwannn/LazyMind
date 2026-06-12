@@ -58,39 +58,18 @@ def _get_memory_review_conn() -> Engine:
     return _get_engine(url=url, dsn=dsn)
 
 
-def is_valid_memory_review_session_id(session_id: str) -> bool:
-    session_id = str(session_id or '').strip()
-    if not session_id:
-        return False
-
-    engine = _get_memory_review_conn()
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT 1
-                FROM resource_session_snapshots
-                WHERE session_id = :session_id
-                LIMIT 1
-                """
-            ),
-            {'session_id': session_id},
-        ).first()
-    return row is not None
-
-
 def insert_memory_review_record(
     *,
     target: str,
-    session_id: str,
+    user_id: str,
     content: str,
     source_content: str = '',
     operations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if target not in {'memory', 'user_preference'}:
         raise ValueError("target must be one of 'memory' or 'user_preference'.")
-    if not session_id.strip():
-        raise ValueError('session_id is required.')
+    if not user_id.strip():
+        raise ValueError('user_id is required.')
     if not isinstance(content, str) or not content.strip():
         raise ValueError('content must be a non-empty string.')
 
@@ -106,7 +85,7 @@ def insert_memory_review_record(
                 INSERT INTO {MEMORY_REVIEW_TABLE} (
                     id,
                     target,
-                    session_id,
+                    user_id,
                     source_content,
                     content,
                     operations,
@@ -117,7 +96,7 @@ def insert_memory_review_record(
                 VALUES (
                     :id,
                     :target,
-                    :session_id,
+                    :user_id,
                     :source_content,
                     :content,
                     CAST(:operations AS JSONB),
@@ -130,7 +109,7 @@ def insert_memory_review_record(
             {
                 'id': record_id,
                 'target': target,
-                'session_id': session_id.strip(),
+                'user_id': user_id.strip(),
                 'source_content': source_content,
                 'content': content,
                 'operations': operation_payload,
@@ -141,7 +120,7 @@ def insert_memory_review_record(
     return {
         'id': record_id,
         'target': target,
-        'session_id': session_id.strip(),
+        'user_id': user_id.strip(),
         'state': 'success',
         'review_status': 'pending',
         'time': created_at,

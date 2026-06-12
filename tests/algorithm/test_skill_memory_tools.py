@@ -53,7 +53,7 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
     monkeypatch.setattr(
         memory_mod.lazyllm,
         'globals',
-        {'agentic_config': {'session_id': 'sid-1', 'memory': 'old', 'user': 'old'}},
+        {'agentic_config': {'user_id': 'user-1', 'memory': 'old', 'user': 'old'}},
     )
 
     memory_result = memory_mod.memory_editor(
@@ -76,14 +76,14 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
     assert records == [
         {
             'target': 'memory',
-            'session_id': 'sid-1',
+            'user_id': 'user-1',
             'source_content': 'old',
             'content': 'new',
             'operations': [{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
         },
         {
             'target': 'user_preference',
-            'session_id': 'sid-1',
+            'user_id': 'user-1',
             'source_content': 'old',
             'content': 'new',
             'operations': [{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
