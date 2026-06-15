@@ -45,7 +45,12 @@ def skill_editor(
 
     Args:
         name: Skill name.
-        action: Action to perform.
+        action: Skill workflow to run. Use 'create' to submit a new SKILL.md
+            content row for review, 'modify' to edit an existing remote skill
+            using the 'operations' argument and submit the edited content for
+            review, or 'remove' to mark an existing remote skill for deletion.
+            For 'modify' and 'remove', a pending review row for the same
+            category/name blocks the request.
         category: Skill category directory used to locate category/name/SKILL.md.
         content: Full SKILL.md content, including YAML frontmatter with
             name/category/description. ONLY for action='create'. Do NOT pass
