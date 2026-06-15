@@ -1,25 +1,36 @@
 from typing import Any, Dict, List, Literal, Optional
 
 import lazyllm
-import requests
+from typing_extensions import TypedDict
 
 from lazymind.chat.engine.tools.infra import (
-    Suggestion,
     build_skill_identity,
-    dump_suggestion,
     handle_tool_errors,
     is_writable_skill_source,
     list_all_skill_entries,
     normalize_skill_category,
-    post_core_api,
     tool_error,
     tool_success,
     validate_skill_content,
     validate_skill_name,
 )
+from lazymind.chat.engine.tools.infra.skill_review_store import (
+    SKILL_REVIEW_TYPE_NEW,
+    SKILL_REVIEW_TYPE_PATCH,
+    find_pending_skill_review,
+    insert_skill_review_result,
+    mark_skill_review_delete,
+)
 from lazymind.config import config as _cfg
 
-MAX_SUGGESTIONS_PER_CALL = 5
+
+class SkillEditOperation(TypedDict, total=False):
+    """JSON edit operation applied to current SKILL.md content."""
+
+    op: str
+    old: str
+    new: str
+    content: str
 
 
 @handle_tool_errors
@@ -28,7 +39,7 @@ def skill_editor(
     action: Literal['create', 'modify', 'remove'],
     category: Optional[str],
     content: Optional[str] = None,
-    suggestions: Optional[List[Suggestion]] = None,
+    operations: Optional[List[SkillEditOperation]] = None,
     reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Manage skills by creating, modifying, or removing a skill entry.
@@ -36,28 +47,26 @@ def skill_editor(
     Args:
         name: Skill name.
         action: Action to perform.
-        category: Skill category directory.
-        content: Full SKILL.md content. ONLY for action='create'.
-            Do NOT pass for action='modify' or 'remove'.
-        suggestions: Ordered list of suggestions (max 5 per call). Each
-            item is a dict with the following fields. ONLY for
-            action='modify'. Do NOT pass for action='create' or 'remove'.
+        category: Skill category directory used to locate category/name/SKILL.md.
+        content: Full SKILL.md content, including YAML frontmatter with
+            name/category/description. ONLY for action='create'. Do NOT pass
+            for action='modify' or 'remove'.
+        operations: Ordered JSON edit operations. ONLY for action='modify'.
+            Do NOT pass for action='create' or 'remove'. Supported operations:
 
-            - ``title`` (str, required): short label summarising the
-              proposed change.
-            - ``content`` (str, required): natural-language description of
-              the modification to the existing skill content. This should
-              usually describe one focused update such as adjusting trigger
-              conditions, refining scope, adding/removing a rule, or
-              correcting an inaccurate instruction.
-            - ``reason`` (str, optional): why the change is worth making.
+            - ``{"op": "replace_text", "old": "...", "new": "..."}``:
+              replace the first exact ``old`` substring with ``new``.
+              Prefer multiple small replace_text operations for local edits.
+            - ``{"op": "replace_all", "content": "..."}``: replace the
+              full original SKILL.md content with ``content``. Use this only
+              when exact local replacement is not safe enough.
         reason: Why the skill should be removed. ONLY for action='remove'.
     """
     lazyllm.LOG.info(
         '[skill_editor] called '
         f'name={name!r} action={action!r} '
         f'category={category!r} content_len={len(content) if content else 0} '
-        f'suggestions_count={len(suggestions) if suggestions else 0}'
+        f'operations_count={len(operations) if operations else 0}'
     )
 
     name_error = validate_skill_name(name)
@@ -65,13 +74,7 @@ def skill_editor(
         return tool_error('skill_editor', name_error, log_message=f'[skill_editor] fail reason={name_error!r}')
 
     agentic_config = lazyllm.globals['agentic_config']
-    session_id = str(agentic_config.get('session_id') or '').strip()
-    if not session_id:
-        return tool_error(
-            'skill_editor',
-            "'session_id' is required in agentic_config.",
-            log_message="[skill_editor] fail reason='session_id' is required in agentic_config.",
-        )
+    user_id = str(agentic_config.get('user_id') or '').strip()
 
     normalized_category = normalize_skill_category(category)
     if normalized_category is None:
@@ -100,8 +103,8 @@ def skill_editor(
                 content_error,
                 log_message=f'[skill_editor] fail reason={content_error!r}',
             )
-        if suggestions:
-            return tool_error('skill_editor', "action='create' must not include 'suggestions'.")
+        if operations:
+            return tool_error('skill_editor', "action='create' must not include 'operations'.")
         if existing_skill:
             source = existing_skill.get('source', 'file')
             if not is_writable_skill_source(source):
@@ -116,40 +119,30 @@ def skill_editor(
                 "use action='modify' to edit it or action='remove' to delete it first."
             )
 
-        result: Dict[str, Any] = {
+        record = insert_skill_review_result(
+            category=normalized_category,
+            skill_name=name,
+            review_type=SKILL_REVIEW_TYPE_NEW,
+            skill_content=content or '',
+            user_id=user_id,
+        )
+        return tool_success('skill_editor', {
             'name': name,
             'action': action,
             'category': normalized_category,
-            'content': content,
-        }
-        payload = {
-            'session_id': session_id,
-            'category': normalized_category,
-            'skill_name': name,
-            'content': content,
-        }
-        try:
-            result.update(post_core_api('/skill/create', payload))
-        except (requests.RequestException, RuntimeError) as exc:
-            return tool_error(
-                'skill_editor',
-                f'Failed to create skill: {exc}',
-                log_message=f'[skill_editor] create failed: {exc}',
-                log_level='error',
-            )
-        return tool_success('skill_editor', result)
+            'status': 'success',
+            'persisted': 'skill_review_results',
+            'record_id': record.get('id'),
+            'requestid': record.get('requestid'),
+            'review_status': record.get('review_status', 'pending'),
+            'type': record.get('type', SKILL_REVIEW_TYPE_NEW),
+        })
 
     if action == 'modify':
         if content is not None:
-            return tool_error('skill_editor', "action='modify' must not include 'content'; use 'suggestions'.")
-        if not suggestions:
-            return tool_error('skill_editor', "action='modify' requires a non-empty 'suggestions' list.")
-        if len(suggestions) > MAX_SUGGESTIONS_PER_CALL:
-            return tool_error(
-                'skill_editor',
-                f'At most {MAX_SUGGESTIONS_PER_CALL} suggestions are allowed per call; '
-                f'got {len(suggestions)}.'
-            )
+            return tool_error('skill_editor', "action='modify' must not include 'content'; use 'operations'.")
+        if not operations:
+            return tool_error('skill_editor', "action='modify' requires a non-empty 'operations' list.")
         if not existing_skill:
             return tool_error(
                 'skill_editor',
@@ -169,32 +162,56 @@ def skill_editor(
                 f'{source!r}; skill_editor can only modify remote skills.'
             )
 
-        result = {
+        pending = find_pending_skill_review(normalized_category, name)
+        if pending:
+            return _pending_review_error(name, normalized_category, pending)
+
+        try:
+            from lazymind.rewrite.base import UnprocessableContentError
+            from lazymind.rewrite.skill import _apply_skill_edit_operations
+
+            current_content = existing_skill.get('content') or ''
+            operation_payload = [dict(op) for op in operations]
+            edited_content = _apply_skill_edit_operations(
+                current_content,
+                {'operations': operation_payload},
+            )
+            if edited_content.strip() == current_content.strip():
+                raise UnprocessableContentError(
+                    'Edited SKILL.md content is unchanged from current content. '
+                    'A review row must contain at least one real content change.'
+                )
+        except UnprocessableContentError as exc:
+            return tool_error('skill_editor', str(exc))
+
+        content_error = validate_skill_content(edited_content)
+        if content_error:
+            return tool_error('skill_editor', content_error)
+
+        record = insert_skill_review_result(
+            category=normalized_category,
+            skill_name=name,
+            review_type=SKILL_REVIEW_TYPE_PATCH,
+            skill_content=edited_content,
+            user_id=user_id,
+            summary=f'skill_editor operations: {len(operation_payload)}',
+        )
+        return tool_success('skill_editor', {
             'name': name,
             'action': action,
             'category': normalized_category,
-            'suggestions': [dump_suggestion(s) for s in suggestions],
-        }
-        payload = {
-            'session_id': session_id,
-            'skill_name': name,
-            'category': normalized_category,
-            'suggestions': [dump_suggestion(s) for s in suggestions],
-        }
-        try:
-            result.update(post_core_api('/skill/suggestion', payload))
-        except (requests.RequestException, RuntimeError) as exc:
-            return tool_error(
-                'skill_editor',
-                f'Failed to submit skill suggestions: {exc}',
-                log_message=f'[skill_editor] modify failed: {exc}',
-                log_level='error',
-            )
-        return tool_success('skill_editor', result)
+            'status': 'success',
+            'operation_count': len(operation_payload),
+            'persisted': 'skill_review_results',
+            'record_id': record.get('id'),
+            'requestid': record.get('requestid'),
+            'review_status': record.get('review_status', 'pending'),
+            'type': record.get('type', SKILL_REVIEW_TYPE_PATCH),
+        })
 
     if action == 'remove':
-        if content is not None or suggestions:
-            return tool_error('skill_editor', "action='remove' must not include 'content' or 'suggestions'.")
+        if content is not None or operations:
+            return tool_error('skill_editor', "action='remove' must not include 'content' or 'operations'.")
         if not existing_skill:
             return tool_error(
                 'skill_editor',
@@ -209,30 +226,48 @@ def skill_editor(
                 f'{source!r}; skill_editor can only remove remote skills.'
             )
 
-        result = {
+        pending = find_pending_skill_review(normalized_category, name)
+        if pending:
+            return _pending_review_error(name, normalized_category, pending)
+
+        record = mark_skill_review_delete(
+            category=normalized_category,
+            skill_name=name,
+            user_id=user_id,
+            summary=(reason or '').strip() or None,
+        )
+        if not record:
+            return tool_error(
+                'skill_editor',
+                f'Skill {name!r} in category {normalized_category!r} has no skill_review_results row to mark delete.'
+            )
+        return tool_success('skill_editor', {
             'name': name,
             'action': action,
             'category': normalized_category,
             'reason': reason,
-        }
-        payload = {
-            'session_id': session_id,
-            'skill_name': name,
-            'category': normalized_category,
-            'reason': reason or '',
-        }
-        try:
-            result.update(post_core_api('/skill/remove', payload))
-        except (requests.RequestException, RuntimeError) as exc:
-            return tool_error(
-                'skill_editor',
-                f'Failed to remove skill: {exc}',
-                log_message=f'[skill_editor] remove failed: {exc}',
-                log_level='error',
-            )
-        return tool_success('skill_editor', result)
+            'status': 'success',
+            'persisted': 'skill_review_results',
+            'record_id': record.get('id'),
+            'requestid': record.get('requestid'),
+            'review_status': record.get('review_status', 'pending'),
+            'type': record.get('type'),
+        })
 
     return tool_error(
         'skill_editor',
         f"Unknown action {action!r}; expected one of 'create', 'modify', 'remove'."
+    )
+
+
+def _pending_review_error(
+    name: str,
+    category: str,
+    pending: Dict[str, Any],
+) -> Dict[str, Any]:
+    return tool_error(
+        'skill_editor',
+        f'Skill {name!r} in category {category!r} is pending in skill_review_results; '
+        'please process the pending skill review before submitting another change.',
+        meta={'pending_record_id': pending.get('id')},
     )

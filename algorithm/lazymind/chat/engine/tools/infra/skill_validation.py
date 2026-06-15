@@ -57,6 +57,8 @@ def validate_skill_content(content: str) -> Optional[str]:
         return 'SKILL.md must contain YAML frontmatter.'
     if 'name' not in frontmatter:
         return "Frontmatter must include 'name'."
+    if 'category' not in frontmatter:
+        return "Frontmatter must include 'category'."
     if 'description' not in frontmatter:
         return "Frontmatter must include 'description'."
     if len(str(frontmatter.get('description', ''))) > _MAX_DESCRIPTION_LENGTH:
