@@ -54,12 +54,20 @@ func (e *DefaultEngine) CreateSource(ctx context.Context, req CreateSourceReques
 		return CreateSourceResponse{}, err
 	}
 
+	bindings := collectBindings(prepared)
+	watcherErrors := e.queueLocalWatcherStarts(ctx, source, bindings)
+	jobIDs, jobErrors := e.triggerInitialSyncs(ctx, bindings)
+	jobErrors = append(watcherErrors, jobErrors...)
 	operation.Status = OperationStatusSucceeded
+	if len(jobErrors) > 0 {
+		operation.Status = OperationStatusSucceededWithWarning
+		operation.Warning = store.JSON{"job_errors": jobErrorsJSON(jobErrors)["items"]}
+	}
 	operation.CompensationStatus = CompensationStatusNone
 	if err := mapStoreError(e.repo.UpdateCreateOperation(ctx, operation)); err != nil {
 		return CreateSourceResponse{}, err
 	}
-	return CreateSourceResponse{Source: sourceToResponse(source), Bindings: bindingsToResponse(collectBindings(prepared))}, nil
+	return CreateSourceResponse{Source: sourceToResponse(source), Bindings: bindingsToResponse(bindings), JobIDs: jobIDs, JobErrors: jobErrors}, nil
 }
 
 func (e *DefaultEngine) loadCreateReplay(ctx context.Context, callerID, requestID, hash string) (CreateSourceResponse, bool, error) {
@@ -124,7 +132,7 @@ func (e *DefaultEngine) newSource(sourceID, datasetID string, req CreateSourceRe
 func (e *DefaultEngine) prepareCreateBindings(ctx context.Context, sourceID, datasetID string, req CreateSourceRequest, now time.Time) ([]preparedBinding, error) {
 	prepared := make([]preparedBinding, 0, len(req.Bindings))
 	for index, input := range req.Bindings {
-		item, err := e.prepareCreateBinding(ctx, sourceID, datasetID, req.CallerID, req.RequestID, index, input, now)
+		item, err := e.prepareCreateBinding(ctx, sourceID, datasetID, req.Name, req.CallerID, req.TenantID, req.RequestID, index, input, now)
 		if err != nil {
 			return prepared, err
 		}

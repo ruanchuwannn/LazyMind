@@ -37,6 +37,7 @@ func (e *DefaultEngine) UpdateBinding(ctx context.Context, callerID, sourceID, b
 		return BindingMutationResponse{}, err
 	}
 	warnings := e.deleteFolderAsWarning(ctx, src.DatasetID, cleanup.OldCoreParentDocumentID, callerID)
+	warnings = append(warnings, e.queueLocalWatcherTransition(ctx, src, current, updated)...)
 	var jobIDs []string
 	if cleanup.ClearIndexedState {
 		var jobErrors []JobError
@@ -65,6 +66,7 @@ func (e *DefaultEngine) prepareUpdateBinding(ctx context.Context, callerID strin
 	changedTarget := targetChanged(current, input)
 	if changedTarget {
 		input = completeTargetInput(current, input)
+		input.ProviderOptions = providerOptionsWithActor(input.ProviderOptions, callerID, src.TenantID)
 	}
 	if err := validateBindingInput(input, changedTarget); err != nil {
 		return store.Binding{}, store.SyncCheckpoint{}, store.BindingUpdateCleanup{}, err
@@ -83,7 +85,7 @@ func (e *DefaultEngine) prepareUpdateBinding(ctx context.Context, callerID strin
 		}
 		folderName := updated.CoreParentDocumentName
 		if folderName == "" {
-			folderName = target.DisplayName
+			folderName = bindingRootDisplayName(input.DisplayName, src.Name, target)
 		}
 		folderID, err := e.createCoreFolder(ctx, coreclient.CreateBindingRootDocumentRequest{
 			IdempotencyKey: bindingFolderIdempotencyKey(current.BindingID, current.BindingGeneration+1),
@@ -94,6 +96,7 @@ func (e *DefaultEngine) prepareUpdateBinding(ctx context.Context, callerID strin
 		if err != nil {
 			return store.Binding{}, store.SyncCheckpoint{}, store.BindingUpdateCleanup{}, err
 		}
+		updated.CoreParentDocumentName = folderName
 		cleanup = store.BindingUpdateCleanup{
 			OldCoreParentDocumentID: current.CoreParentDocumentID,
 			ClearIndexedState:       true,

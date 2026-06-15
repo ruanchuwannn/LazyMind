@@ -13,6 +13,7 @@ interface ApiEnvelope<T> {
 }
 
 interface ManagedStateItem {
+  agent_persona?: string;
   auto_evo?: boolean;
   auto_evo_apply_status?: string;
   auto_evo_generation?: number;
@@ -20,10 +21,13 @@ interface ManagedStateItem {
   content?: string;
   content_summary?: string;
   has_pending_review_suggestions?: boolean;
+  response_style?: string;
   resource_id?: string;
   resource_type?: string;
+  review_status?: string;
   suggestion_status?: string;
   title?: string;
+  user_address?: string;
 }
 
 type RawObject = Record<string, unknown>;
@@ -34,10 +38,14 @@ export interface PreferenceAssetRecord {
   content: string;
   protect: boolean;
   autoEvo: boolean;
+  agentPersona?: string;
   hasPendingReviewSuggestions?: boolean;
+  responseStyle?: string;
   resourceType?: string;
+  reviewStatus?: string;
   summary?: string;
   suggestionStatus?: string;
+  userAddress?: string;
   autoEvoApplyStatus?: string;
   autoEvoGeneration?: number;
   autoEvoError?: string;
@@ -131,8 +139,11 @@ export interface EvolutionSuggestionListResult {
 }
 
 interface PreferenceFrontMatter {
+  agentPersona?: string;
   title?: string;
   protect?: boolean;
+  responseStyle?: string;
+  userAddress?: string;
 }
 
 const normalizeResourceType = (resourceType?: string) =>
@@ -328,6 +339,15 @@ const parsePreferenceFrontMatter = (rawContent: string) => {
     if (key === "protect") {
       frontMatter.protect = toBoolean(value, false);
     }
+    if (key === "agent_persona") {
+      frontMatter.agentPersona = value;
+    }
+    if (key === "user_address") {
+      frontMatter.userAddress = value;
+    }
+    if (key === "response_style") {
+      frontMatter.responseStyle = value;
+    }
   });
 
   return {
@@ -416,8 +436,11 @@ export const parsePreferenceContent = (
     content: parsedBody,
     protect: frontMatter.protect ?? Boolean(fallback?.protect),
     autoEvo: Boolean(fallback?.autoEvo),
+    agentPersona: frontMatter.agentPersona ?? fallback?.agentPersona,
+    responseStyle: frontMatter.responseStyle ?? fallback?.responseStyle,
     resourceType: fallback?.resourceType,
     summary: fallback?.summary,
+    userAddress: frontMatter.userAddress ?? fallback?.userAddress,
   };
 };
 
@@ -431,9 +454,18 @@ const normalizeManagedPreference = (item: ManagedStateItem): PreferenceAssetReco
   const title = toStringValue(item.title, "");
   const summary = toStringValue(item.content_summary, "");
   const content = toStringValue(item.content, "");
+  const agentPersona = toStringValue(item.agent_persona, "");
+  const userAddress = toStringValue(item.user_address, "");
+  const responseStyle = toStringValue(item.response_style, "");
   const hasPendingReviewSuggestions = toBoolean(
     item.has_pending_review_suggestions,
     false,
+  );
+  const reviewStatus = toStringValue(
+    item.review_status ||
+      item.suggestion_status ||
+      (hasPendingReviewSuggestions ? "pending" : ""),
+    "",
   );
   const suggestionStatus = toStringValue(item.suggestion_status, "");
 
@@ -448,14 +480,21 @@ const normalizeManagedPreference = (item: ManagedStateItem): PreferenceAssetReco
     content,
     protect: false,
     autoEvo: backendAutoEvo,
+    agentPersona,
+    responseStyle,
     resourceType,
     summary,
+    userAddress,
   });
 
   return {
     ...parsed,
     hasPendingReviewSuggestions,
     title: sanitizeInlineValue(title) || parsed.title,
+    agentPersona: agentPersona || parsed.agentPersona,
+    userAddress: userAddress || parsed.userAddress,
+    responseStyle: responseStyle || parsed.responseStyle,
+    reviewStatus,
     suggestionStatus,
     autoEvoApplyStatus: toStringValue(item.auto_evo_apply_status, ""),
     autoEvoGeneration: toNumberValue(item.auto_evo_generation, 0),
@@ -632,7 +671,10 @@ export async function upsertPreferenceAsset(item: {
   content: string;
   protect?: boolean;
   autoEvo?: boolean;
+  agentPersona?: string;
+  responseStyle?: string;
   resourceType?: string;
+  userAddress?: string;
 }): Promise<PreferenceAssetRecord> {
   const endpoint = isMemoryResourceType(item.resourceType) ? "memory" : "user-preference";
   const requestPayload: RawObject = {
@@ -640,6 +682,15 @@ export async function upsertPreferenceAsset(item: {
   };
   if (item.autoEvo !== undefined) {
     requestPayload.auto_evo = Boolean(item.autoEvo);
+  }
+  if (item.agentPersona !== undefined) {
+    requestPayload.agent_persona = item.agentPersona;
+  }
+  if (item.userAddress !== undefined) {
+    requestPayload.user_address = item.userAddress;
+  }
+  if (item.responseStyle !== undefined) {
+    requestPayload.response_style = item.responseStyle;
   }
   const response = await axiosInstance.put(`${coreBasePath}/${endpoint}`, requestPayload);
   const records = extractManagedPreferenceRecords(response.data);

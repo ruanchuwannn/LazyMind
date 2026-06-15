@@ -33,10 +33,10 @@ func TestTargetTreeListChildrenUsesConnectorAndDoesNotUseFallbackOrStore(t *test
 	if len(spy.listRequests) != 1 || len(spy.mapObjects) != 2 {
 		t.Fatalf("expected connector list and map calls, list=%d map=%d", len(spy.listRequests), len(spy.mapObjects))
 	}
-	if len(page.Items) != 2 {
-		t.Fatalf("expected current page nodes only, got %+v", page.Items)
+	if len(page.Items) != 1 {
+		t.Fatalf("expected target directory tree to hide files, got %+v", page.Items)
 	}
-	if page.Items[0].ObjectKey != "folder-1" || page.Items[1].ObjectKey != "doc-1" {
+	if page.Items[0].ObjectKey != "folder-1" {
 		t.Fatalf("unexpected target tree nodes: %+v", page.Items)
 	}
 	if fallback.called {
@@ -69,8 +69,11 @@ func TestTargetTreeAllCurrentLevelPullsPagesWithoutWritingBusinessTables(t *test
 	if len(spy.listRequests) != 2 {
 		t.Fatalf("expected connector pagination, got %d requests", len(spy.listRequests))
 	}
-	if !page.ListComplete || page.HasMore || len(page.Items) != 3 {
-		t.Fatalf("expected complete current-level page, got %+v", page)
+	if !page.ListComplete || page.HasMore || len(page.Items) != 2 {
+		t.Fatalf("expected complete current-level directory page, got %+v", page)
+	}
+	if page.Items[0].ObjectKey != "folder-1" || page.Items[1].ObjectKey != "page-1" {
+		t.Fatalf("target directory tree should keep containers and hide files, got %+v", page.Items)
 	}
 }
 
@@ -140,6 +143,33 @@ func TestTargetTreeFallbackSearchScopesToBindingAndTreeKey(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].BindingID != "binding-a" {
 		t.Fatalf("fallback search crossed binding scope: %+v", page.Items)
 	}
+}
+
+func TestTreeSearchRejectsUnsupportedListMode(t *testing.T) {
+	t.Parallel()
+
+	spy := &treeConnectorSpy{}
+	registry, err := connector.NewDefaultConnectorRegistry(spy)
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	targetEngine := NewDefaultTargetTreeEngine(registry)
+	_, err = targetEngine.Search(context.Background(), TargetTreeSearchRequest{
+		ConnectorType: treeTestConnectorType,
+		Keyword:       "hand",
+		ListMode:      ListModeAllCurrentLevel,
+		MaxItems:      10,
+	})
+	assertTreeErrorCode(t, err, ErrCodeUnsupportedListMode)
+
+	sourceEngine := NewDBSourceTreeQueryEngine(newTreeReadRepo(), TreeQueryLimits{})
+	_, err = sourceEngine.Search(context.Background(), SourceTreeSearchRequest{
+		SourceID: "source-1",
+		Keyword:  "hand",
+		ListMode: ListModeAllCurrentLevel,
+		MaxItems: 10,
+	})
+	assertTreeErrorCode(t, err, ErrCodeUnsupportedListMode)
 }
 
 func TestTargetTreeNodeUsesBindingTargetSemantics(t *testing.T) {
@@ -270,6 +300,47 @@ func TestSourceTreeLiveRootRequestUsesTreeKeyNodeRef(t *testing.T) {
 	}
 	if len(spy.listRequests) != 1 || spy.listRequests[0].NodeRef != "wiki:space-1:node-root" {
 		t.Fatalf("live root request should pass tree_key as provider node_ref, got %+v", spy.listRequests)
+	}
+}
+
+func TestSourceTreeLiveWikiSpaceNodeRefPreserved(t *testing.T) {
+	t.Parallel()
+
+	spy := &treeConnectorSpy{connectorType: connector.ConnectorType("feishu")}
+	registry, err := connector.NewDefaultConnectorRegistry(spy)
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	repo := newTreeReadRepo()
+	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
+	repo.bindings["source-1"] = []store.Binding{{
+		BindingID:        "binding-1",
+		SourceID:         "source-1",
+		TreeKey:          "feishu:feishu:wiki:spaces",
+		ConnectorType:    "feishu",
+		TargetType:       "wiki_node",
+		TargetRef:        "feishu:wiki:spaces",
+		AuthConnectionID: "auth-1",
+		Status:           "ACTIVE",
+	}}
+	engine := NewDBSourceTreeQueryEngine(
+		repo,
+		TreeQueryLimits{DefaultPageSize: 10, MaxPageSize: 100, MaxAllCurrentLevelItems: 10},
+		WithSourceTreeConnectorRegistry(registry),
+	)
+
+	_, err = engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
+		SourceID:  "source-1",
+		BindingID: "binding-1",
+		TreeKey:   "feishu:feishu:wiki:spaces",
+		ParentKey: "feishu:wiki:space:space-1",
+		PageSize:  40,
+	})
+	if err != nil {
+		t.Fatalf("list live wiki space children: %v", err)
+	}
+	if len(spy.listRequests) != 1 || spy.listRequests[0].NodeRef != "feishu:wiki:space:space-1" {
+		t.Fatalf("wiki space node_ref should be preserved for connector traversal, got %+v", spy.listRequests)
 	}
 }
 
@@ -442,6 +513,9 @@ func TestSourceTreeListChildrenUsesIndexedRepoWhenUseCache(t *testing.T) {
 	if len(roots.Items) != 1 || roots.Items[0].BindingID != "binding-1" {
 		t.Fatalf("unexpected binding roots: %+v", roots)
 	}
+	if !roots.Items[0].Selectable || !roots.Items[0].IsDocument || !roots.Items[0].IsContainer {
+		t.Fatalf("binding root should be selectable as a sync target: %+v", roots.Items[0])
+	}
 
 	page, err := engine.ListChildren(context.Background(), SourceTreeChildrenRequest{
 		SourceID:  "source-1",
@@ -506,6 +580,9 @@ func TestSourceTreeBindingRequestExpandsIndexedRootObject(t *testing.T) {
 	for _, node := range page.Items {
 		if node.ObjectKey == "tree-root" {
 			t.Fatalf("binding request should expand root object instead of returning it: %+v", page.Items)
+		}
+		if node.ObjectKey == "folder-1" && (!node.Selectable || !node.IsDocument || !node.IsContainer) {
+			t.Fatalf("container child should be selectable as a sync target: %+v", node)
 		}
 	}
 }
@@ -604,15 +681,18 @@ func TestSourceTreeAllCurrentLevelRejectsTooManyIndexedChildren(t *testing.T) {
 func TestSourceDocumentQueryReadsIndexedDocumentsOnly(t *testing.T) {
 	t.Parallel()
 
+	sourceModifiedAt := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	parsedAt := time.Date(2026, 5, 31, 16, 0, 0, 0, time.UTC)
 	repo := newTreeReadRepo()
 	repo.sources["source-1"] = store.Source{SourceID: "source-1"}
 	repo.bindings["source-1"] = []store.Binding{{BindingID: "binding-1", SourceID: "source-1"}}
 	object := indexedObject("source-1", "binding-1", "tree-root", "doc-1", "", "Welcome", true, false).Object
 	object.SizeBytes = 42
 	object.FileExtension = ".md"
+	object.ModifiedAt = &sourceModifiedAt
 	repo.documents = []DocumentWithState{{
 		Object: object,
-		State:  store.DocumentState{SourceID: "source-1", BindingID: "binding-1", ObjectKey: "doc-1", SourceState: "NEW", SyncState: "IDLE", Selectable: true, SourceVersion: "v1"},
+		State:  store.DocumentState{SourceID: "source-1", BindingID: "binding-1", ObjectKey: "doc-1", SourceState: "NEW", SyncState: "IDLE", Selectable: true, SourceVersion: "v1", LastSyncedAt: &parsedAt},
 		Document: &store.Document{
 			DocumentID:     "document-1",
 			SourceID:       "source-1",
@@ -639,6 +719,15 @@ func TestSourceDocumentQueryReadsIndexedDocumentsOnly(t *testing.T) {
 	}
 	if resp.Items[0].DisplayName != "Welcome" {
 		t.Fatalf("display_name should preserve source name: %+v", resp.Items[0])
+	}
+	if resp.Items[0].ModifiedAt != nil {
+		t.Fatalf("modified_at should not carry source edit time for datasource UI: %+v", resp.Items[0])
+	}
+	if resp.Items[0].LastSyncedAt == nil || !resp.Items[0].LastSyncedAt.Equal(parsedAt) {
+		t.Fatalf("last_synced_at should carry document parse time: %+v", resp.Items[0])
+	}
+	if resp.Items[0].SourceModifiedAt == nil || !resp.Items[0].SourceModifiedAt.Equal(sourceModifiedAt) {
+		t.Fatalf("source_modified_at should carry source document edit time: %+v", resp.Items[0])
 	}
 	if resp.Summary["storage_bytes"] != int64(42) {
 		t.Fatalf("document summary storage_bytes was not mapped: %+v", resp.Summary)

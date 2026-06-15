@@ -104,10 +104,11 @@ func TestBuildChatRequestBodyKeepsExistingFilters(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyAddsEvolutionContext(t *testing.T) {
+	memoryContent := "---\nagent_persona: |-\n  严谨助手\nuser_address: |-\n  老师\nresponse_style: |-\n  简洁\n---\n\nmemory-content"
 	ctx := &evolution.ChatResourceContext{
 		DisabledTools:      []string{"bing"},
 		AvailableSkills:    []string{"coding/git-workflow"},
-		Memory:             "memory-content",
+		Memory:             memoryContent,
 		UserPreference:     "preference-content",
 		UsePersonalization: true,
 	}
@@ -128,7 +129,7 @@ func TestBuildChatRequestBodyAddsEvolutionContext(t *testing.T) {
 	if _, ok := body["skill_fs_url"]; ok {
 		t.Fatalf("expected skill_fs_url to be omitted")
 	}
-	if got := body["memory"]; got != "memory-content" {
+	if got := body["memory"]; got != memoryContent {
 		t.Fatalf("unexpected memory: %#v", got)
 	}
 	if got := body["user_preference"]; got != "preference-content" {
@@ -435,6 +436,14 @@ func TestBuildLazyChatRequestMapsAllFields(t *testing.T) {
 		"llm_config": map[string]any{
 			"llm": map[string]any{"source": "openai", "model": "gpt-4o"},
 		},
+		"mcp_config": []any{
+			map[string]any{
+				"id":        "msp_1",
+				"name":      "context7",
+				"transport": "sse",
+				"url":       "https://mcp.example.com/sse",
+			},
+		},
 	})
 
 	if req.Query != "hello" || req.SessionID != "conv-1" {
@@ -485,6 +494,9 @@ func TestBuildLazyChatRequestMapsAllFields(t *testing.T) {
 	}
 	if req.LLMConfig == nil || req.LLMConfig["llm"] == nil {
 		t.Fatalf("expected llm_config to be forwarded, got %#v", req.LLMConfig)
+	}
+	if len(req.MCPConfig) != 1 {
+		t.Fatalf("expected mcp_config to be forwarded, got %#v", req.MCPConfig)
 	}
 }
 

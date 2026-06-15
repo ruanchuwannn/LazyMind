@@ -82,6 +82,18 @@ type DefaultPrompt struct {
 
 func (DefaultPrompt) TableName() string { return "default_prompts" }
 
+type UserDisabledTool struct {
+	ID             int64      `gorm:"column:id;primaryKey;autoIncrement"`
+	ToolName       string     `gorm:"column:tool_name;type:varchar(255);not null;uniqueIndex:uk_user_disabled_tools_user_tool,priority:2"`
+	CreateUserID   string     `gorm:"column:create_user_id;type:varchar(255);not null;uniqueIndex:uk_user_disabled_tools_user_tool,priority:1"`
+	CreateUserName string     `gorm:"column:create_user_name;type:varchar(255);not null"`
+	CreatedAt      time.Time  `gorm:"column:created_at;not null"`
+	UpdatedAt      time.Time  `gorm:"column:updated_at;not null"`
+	DeletedAt      *time.Time `gorm:"column:deleted_at"`
+}
+
+func (UserDisabledTool) TableName() string { return "user_disabled_tools" }
+
 type MultiAnswersSwitch struct {
 	ID     int32 `gorm:"column:id;primaryKey;autoIncrement"`
 	Status int32 `gorm:"column:status;not null;default:0"`
@@ -120,6 +132,7 @@ type ChatHistory struct {
 	ExpectedAnswer  string          `gorm:"column:expected_answer;type:text"`
 	Ext             json.RawMessage `gorm:"column:ext;type:json"`
 	Version         string          `gorm:"column:version;type:varchar(128);default:2.3"`
+	ToolCallTurns   int             `gorm:"column:tool_call_turns;not null;default:0;check:chk_chat_histories_tool_call_turns_non_negative,tool_call_turns >= 0"`
 
 	TimeMixin
 }
@@ -134,6 +147,7 @@ type MultiAnswersChatHistory struct {
 	RetrievalResult json.RawMessage `gorm:"column:retrieval_result;type:json"`
 	Content         string          `gorm:"column:content;type:text"`
 	Result          string          `gorm:"column:result;type:text"`
+	ToolCallTurns   int             `gorm:"column:tool_call_turns;not null;default:0;check:chk_multi_answers_chat_histories_tool_call_turns_non_negative,tool_call_turns >= 0"`
 	FeedBack        int             `gorm:"column:feed_back;default:0"`
 	Reason          string          `gorm:"column:reason;type:varchar(255)"`
 	Ext             json.RawMessage `gorm:"column:ext;type:json"`

@@ -18,6 +18,7 @@ import (
 
 	"lazymind/core/common/orm"
 	"lazymind/core/evolution"
+	"lazymind/core/resourcechange"
 	"lazymind/core/store"
 )
 
@@ -37,6 +38,8 @@ type draftPreviewAPITestResponse struct {
 	Message string `json:"message"`
 	Data    struct {
 		SkillID            string `json:"skill_id"`
+		ReviewResultID     string `json:"review_result_id"`
+		ReviewStatus       string `json:"review_status"`
 		DraftStatus        string `json:"draft_status"`
 		DraftSourceVersion int64  `json:"draft_source_version"`
 		CurrentContent     string `json:"current_content"`
@@ -51,19 +54,19 @@ type listSkillsAPITestResponse struct {
 	Message string `json:"message"`
 	Data    struct {
 		Items []struct {
-			SkillID                     string   `json:"skill_id"`
-			Description                 string   `json:"description"`
-			Tags                        []string `json:"tags"`
-			UpdateStatus                string   `json:"update_status"`
-			HasPendingReviewSuggestions bool     `json:"has_pending_review_suggestions"`
-			SuggestionStatus            string   `json:"suggestion_status"`
-			Children                    []struct {
-				SkillID                     string   `json:"skill_id"`
-				Description                 string   `json:"description"`
-				Tags                        []string `json:"tags"`
-				UpdateStatus                string   `json:"update_status"`
-				HasPendingReviewSuggestions bool     `json:"has_pending_review_suggestions"`
-				SuggestionStatus            string   `json:"suggestion_status"`
+			SkillID                string   `json:"skill_id"`
+			Description            string   `json:"description"`
+			Tags                   []string `json:"tags"`
+			UpdateStatus           string   `json:"update_status"`
+			HasPendingReviewResult bool     `json:"has_pending_review_result"`
+			ReviewStatus           string   `json:"review_status"`
+			Children               []struct {
+				SkillID                string   `json:"skill_id"`
+				Description            string   `json:"description"`
+				Tags                   []string `json:"tags"`
+				UpdateStatus           string   `json:"update_status"`
+				HasPendingReviewResult bool     `json:"has_pending_review_result"`
+				ReviewStatus           string   `json:"review_status"`
 			} `json:"children"`
 		} `json:"items"`
 		Page     int `json:"page"`
@@ -76,16 +79,16 @@ type getSkillDetailAPITestResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		SkillID                     string   `json:"skill_id"`
-		Description                 string   `json:"description"`
-		Tags                        []string `json:"tags"`
-		ParentID                    string   `json:"parent_id"`
-		ParentSkillID               string   `json:"parent_skill_id"`
-		ParentSkillName             string   `json:"parent_skill_name"`
-		UpdateStatus                string   `json:"update_status"`
-		HasPendingReviewSuggestions bool     `json:"has_pending_review_suggestions"`
-		SuggestionStatus            string   `json:"suggestion_status"`
-		Children                    []any    `json:"children"`
+		SkillID                string   `json:"skill_id"`
+		Description            string   `json:"description"`
+		Tags                   []string `json:"tags"`
+		ParentID               string   `json:"parent_id"`
+		ParentSkillID          string   `json:"parent_skill_id"`
+		ParentSkillName        string   `json:"parent_skill_name"`
+		UpdateStatus           string   `json:"update_status"`
+		HasPendingReviewResult bool     `json:"has_pending_review_result"`
+		ReviewStatus           string   `json:"review_status"`
+		Children               []any    `json:"children"`
 	} `json:"data"`
 }
 
@@ -101,6 +104,30 @@ func newSkillTestDB(t *testing.T) *orm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	return db
+}
+
+func createSkillPatchReviewResult(t *testing.T, db *orm.DB, id, userID, skillName, content string, at time.Time) {
+	t.Helper()
+	if err := db.Create(&orm.SkillReviewResult{
+		ID:           id,
+		SkillName:    skillName,
+		Type:         "patch",
+		ReviewStatus: "pending",
+		UserID:       userID,
+		SkillContent: content,
+		Time:         at,
+	}).Error; err != nil {
+		t.Fatalf("create skill review result: %v", err)
+	}
+}
+
+func skillReviewResultStatus(t *testing.T, db *orm.DB, id string) string {
+	t.Helper()
+	var row orm.SkillReviewResult
+	if err := db.Select("review_status").Where("id = ?", id).Take(&row).Error; err != nil {
+		t.Fatalf("query skill review result %s: %v", id, err)
+	}
+	return row.ReviewStatus
 }
 
 func TestInternalCreateCreatesSkillDirectly(t *testing.T) {
@@ -954,26 +981,12 @@ func TestGenerateAllowsUserInstructWithoutSuggestions(t *testing.T) {
 		t.Fatalf("expected draft suggestion ids to be cleared, got %#v", gotIDs)
 	}
 
-	confirmReq := httptest.NewRequest(http.MethodPost, "/api/core/skills/skill-1:confirm", nil)
-	confirmReq = mux.SetURLVars(confirmReq, map[string]string{"skill_id": "skill-1"})
-	confirmReq.Header.Set("X-User-Id", "u1")
-	confirmRec := httptest.NewRecorder()
-
-	Confirm(confirmRec, confirmReq)
-
-	if confirmRec.Code != http.StatusOK {
-		t.Fatalf("expected confirm status 200, got %d body=%s", confirmRec.Code, confirmRec.Body.String())
-	}
-	var applied orm.ResourceSuggestion
-	if err := db.Where("id = ?", "suggestion-1").Take(&applied).Error; err != nil {
-		t.Fatalf("query applied suggestion: %v", err)
-	}
-	if applied.Status != evolution.SuggestionStatusAccepted {
-		t.Fatalf("expected suggestion status to stay accepted after confirm, got %q", applied.Status)
+	if updatedSkill.Content != currentContent {
+		t.Fatalf("generate should not apply content before review result accept, got %q", updatedSkill.Content)
 	}
 }
 
-func TestDiscardKeepsAcceptedSuggestionVisibleForRegeneration(t *testing.T) {
+func TestDiscardRejectsPendingSkillReviewResult(t *testing.T) {
 	db := newSkillTestDB(t)
 	store.Init(db.DB, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -997,7 +1010,7 @@ func TestDiscardKeepsAcceptedSuggestionVisibleForRegeneration(t *testing.T) {
 		MimeType:           "text/markdown; charset=utf-8",
 		ContentHash:        evolution.HashContent(currentContent),
 		Version:            1,
-		DraftContent:       "---\nname: git-workflow\ndescription: git workflow\n---\ndraft body",
+		DraftContent:       "---\nname: git-workflow\ndescription: git workflow\n---\nlegacy draft body",
 		DraftSourceVersion: 1,
 		DraftStatus:        "pending_confirm",
 		Ext:                evolution.WithDraftSuggestionIDs(nil, []string{"suggestion-1"}),
@@ -1011,29 +1024,7 @@ func TestDiscardKeepsAcceptedSuggestionVisibleForRegeneration(t *testing.T) {
 	if err := db.Create(&skillRow).Error; err != nil {
 		t.Fatalf("create skill: %v", err)
 	}
-
-	suggestion := orm.ResourceSuggestion{
-		ID:              "suggestion-1",
-		UserID:          "u1",
-		ResourceType:    evolution.ResourceTypeSkill,
-		ResourceKey:     skillRow.ID,
-		Category:        "coding",
-		ParentSkillName: "git-workflow",
-		SkillName:       "git-workflow",
-		FileExt:         "md",
-		RelativePath:    relativePath,
-		Action:          evolution.SuggestionActionModify,
-		SessionID:       "session-1",
-		SnapshotHash:    evolution.HashContent("older body"),
-		Title:           "update workflow",
-		Content:         "update skill body",
-		Status:          evolution.SuggestionStatusAccepted,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	if err := db.Create(&suggestion).Error; err != nil {
-		t.Fatalf("create suggestion: %v", err)
-	}
+	createSkillPatchReviewResult(t, db, "review-discard", "u1", "git-workflow", "---\nname: git-workflow\ndescription: git workflow\n---\nresult draft body", now.Add(time.Second))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/core/skills/skill-1:discard", nil)
 	req = mux.SetURLVars(req, map[string]string{"skill_id": "skill-1"})
@@ -1045,12 +1036,15 @@ func TestDiscardKeepsAcceptedSuggestionVisibleForRegeneration(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	var updated orm.ResourceSuggestion
-	if err := db.Where("id = ?", "suggestion-1").Take(&updated).Error; err != nil {
-		t.Fatalf("query suggestion: %v", err)
+	if status := skillReviewResultStatus(t, db, "review-discard"); status != "rejected" {
+		t.Fatalf("expected review result rejected, got %q", status)
 	}
-	if updated.Status != evolution.SuggestionStatusAccepted {
-		t.Fatalf("expected suggestion to remain accepted after discard, got %q", updated.Status)
+	var updatedSkill orm.SkillResource
+	if err := db.Where("id = ?", "skill-1").Take(&updatedSkill).Error; err != nil {
+		t.Fatalf("query skill: %v", err)
+	}
+	if updatedSkill.Content != currentContent || updatedSkill.Version != 1 {
+		t.Fatalf("discard should not change skill content/version, got content=%q version=%d", updatedSkill.Content, updatedSkill.Version)
 	}
 }
 
@@ -1161,7 +1155,7 @@ func TestConfirmPersistsDraftFrontmatterDescription(t *testing.T) {
 		MimeType:           "text/markdown; charset=utf-8",
 		ContentHash:        evolution.HashContent(currentContent),
 		Version:            2,
-		DraftContent:       draftContent,
+		DraftContent:       "---\nname: git-workflow\ndescription: legacy draft\n---\nlegacy body",
 		DraftSourceVersion: 2,
 		DraftStatus:        "pending_confirm",
 		IsEnabled:          true,
@@ -1174,6 +1168,7 @@ func TestConfirmPersistsDraftFrontmatterDescription(t *testing.T) {
 	if err := db.Create(&skillRow).Error; err != nil {
 		t.Fatalf("create skill: %v", err)
 	}
+	createSkillPatchReviewResult(t, db, "review-confirm", "u1", "git-workflow", draftContent, now.Add(time.Second))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/core/skills/skill-1:confirm", nil)
 	req = mux.SetURLVars(req, map[string]string{"skill_id": "skill-1"})
@@ -1197,6 +1192,9 @@ func TestConfirmPersistsDraftFrontmatterDescription(t *testing.T) {
 	}
 	if updatedSkill.DraftStatus != "" {
 		t.Fatalf("expected draft status to be cleared, got %q", updatedSkill.DraftStatus)
+	}
+	if status := skillReviewResultStatus(t, db, "review-confirm"); status != "accepted" {
+		t.Fatalf("expected review result accepted, got %q", status)
 	}
 }
 
@@ -1225,7 +1223,7 @@ func TestDraftPreviewReturnsCurrentDraftAndDiff(t *testing.T) {
 		MimeType:           "text/markdown; charset=utf-8",
 		ContentHash:        evolution.HashContent(currentContent),
 		Version:            2,
-		DraftContent:       draftContent,
+		DraftContent:       "---\nname: git-workflow\ndescription: legacy draft\n---\nlegacy body\n",
 		DraftSourceVersion: 2,
 		DraftStatus:        "pending_confirm",
 		IsEnabled:          true,
@@ -1236,33 +1234,10 @@ func TestDraftPreviewReturnsCurrentDraftAndDiff(t *testing.T) {
 		UpdatedAt:          now,
 	}
 
-	suggestion := orm.ResourceSuggestion{
-		ID:              "suggestion-1",
-		UserID:          "u1",
-		ResourceType:    evolution.ResourceTypeSkill,
-		ResourceKey:     skillRow.ID,
-		Category:        "coding",
-		ParentSkillName: "git-workflow",
-		SkillName:       "git-workflow",
-		FileExt:         "md",
-		RelativePath:    relativePath,
-		Action:          evolution.SuggestionActionModify,
-		SessionID:       "session-1",
-		SnapshotHash:    evolution.HashContent("older body"),
-		Title:           "update workflow",
-		Content:         "update skill body",
-		Status:          evolution.SuggestionStatusAccepted,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	skillRow.Ext = evolution.WithDraftSuggestionIDs(nil, []string{suggestion.ID})
-
 	if err := db.Create(&skillRow).Error; err != nil {
 		t.Fatalf("create skill: %v", err)
 	}
-	if err := db.Create(&suggestion).Error; err != nil {
-		t.Fatalf("create suggestion: %v", err)
-	}
+	createSkillPatchReviewResult(t, db, "review-preview", "u1", "git-workflow", draftContent, now.Add(time.Second))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/core/skills/skill-1:draft-preview", nil)
 	req = mux.SetURLVars(req, map[string]string{"skill_id": "skill-1"})
@@ -1285,8 +1260,11 @@ func TestDraftPreviewReturnsCurrentDraftAndDiff(t *testing.T) {
 	if resp.Data.SkillID != "skill-1" {
 		t.Fatalf("expected skill_id skill-1, got %q", resp.Data.SkillID)
 	}
-	if resp.Data.DraftStatus != "pending_confirm" {
-		t.Fatalf("expected pending_confirm, got %q", resp.Data.DraftStatus)
+	if resp.Data.ReviewResultID != "review-preview" {
+		t.Fatalf("expected review_result_id review-preview, got %q", resp.Data.ReviewResultID)
+	}
+	if resp.Data.ReviewStatus != "pending" || resp.Data.DraftStatus != "pending" {
+		t.Fatalf("expected pending review status, got review_status=%q draft_status=%q", resp.Data.ReviewStatus, resp.Data.DraftStatus)
 	}
 	if resp.Data.DraftSourceVersion != 2 {
 		t.Fatalf("expected draft_source_version 2, got %d", resp.Data.DraftSourceVersion)
@@ -1308,7 +1286,53 @@ func TestDraftPreviewReturnsCurrentDraftAndDiff(t *testing.T) {
 	}
 }
 
-func TestListMarksSkillsWithPendingReviewSuggestions(t *testing.T) {
+func TestDraftPreviewIgnoresLegacySkillResourceDraft(t *testing.T) {
+	db := newSkillTestDB(t)
+	store.Init(db.DB, nil, nil)
+	t.Cleanup(func() { store.Init(nil, nil, nil) })
+
+	now := time.Now()
+	currentContent := "---\nname: git-workflow\ndescription: git workflow\n---\ncurrent body"
+	row := orm.SkillResource{
+		ID:                 "skill-1",
+		OwnerUserID:        "u1",
+		OwnerUserName:      "User 1",
+		Category:           "coding",
+		ParentSkillName:    "git-workflow",
+		SkillName:          "git-workflow",
+		NodeType:           evolution.SkillNodeTypeParent,
+		FileExt:            "md",
+		RelativePath:       evolution.ParentSkillRelativePath("coding", "git-workflow"),
+		Content:            currentContent,
+		ContentHash:        evolution.HashContent(currentContent),
+		Version:            2,
+		DraftContent:       "---\nname: git-workflow\ndescription: legacy draft\n---\nlegacy body",
+		DraftSourceVersion: 2,
+		DraftStatus:        "pending_confirm",
+		IsEnabled:          true,
+		UpdateStatus:       "pending_confirm",
+		CreateUserID:       "u1",
+		CreateUserName:     "User 1",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("create skill: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/core/skills/skill-1:draft-preview", nil)
+	req = mux.SetURLVars(req, map[string]string{"skill_id": "skill-1"})
+	req.Header.Set("X-User-Id", "u1")
+	rec := httptest.NewRecorder()
+
+	DraftPreview(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected legacy resource draft to be ignored as 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListIgnoresLegacyResourceSuggestionsForReviewButtonState(t *testing.T) {
 	db := newSkillTestDB(t)
 	store.Init(db.DB, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -1440,63 +1464,188 @@ func TestListMarksSkillsWithPendingReviewSuggestions(t *testing.T) {
 	if resp.Code != 0 {
 		t.Fatalf("expected code 0, got %d message=%s", resp.Code, resp.Message)
 	}
-	if resp.Data.Total != 2 {
-		t.Fatalf("expected total 2, got %d", resp.Data.Total)
-	}
-
 	itemsByID := make(map[string]struct {
-		hasPending       bool
-		suggestionStatus string
-		children         map[string]struct {
-			hasPending       bool
-			suggestionStatus string
+		hasPending   bool
+		reviewStatus string
+		children     map[string]struct {
+			hasPending   bool
+			reviewStatus string
 		}
 	}, len(resp.Data.Items))
 	for _, item := range resp.Data.Items {
 		childMap := make(map[string]struct {
-			hasPending       bool
-			suggestionStatus string
+			hasPending   bool
+			reviewStatus string
 		}, len(item.Children))
 		for _, child := range item.Children {
 			childMap[child.SkillID] = struct {
-				hasPending       bool
-				suggestionStatus string
+				hasPending   bool
+				reviewStatus string
 			}{
-				hasPending:       child.HasPendingReviewSuggestions,
-				suggestionStatus: child.SuggestionStatus,
+				hasPending:   child.HasPendingReviewResult,
+				reviewStatus: child.ReviewStatus,
 			}
 		}
 		itemsByID[item.SkillID] = struct {
-			hasPending       bool
-			suggestionStatus string
-			children         map[string]struct {
-				hasPending       bool
-				suggestionStatus string
+			hasPending   bool
+			reviewStatus string
+			children     map[string]struct {
+				hasPending   bool
+				reviewStatus string
 			}
 		}{
-			hasPending:       item.HasPendingReviewSuggestions,
-			suggestionStatus: item.SuggestionStatus,
-			children:         childMap,
+			hasPending:   item.HasPendingReviewResult,
+			reviewStatus: item.ReviewStatus,
+			children:     childMap,
 		}
 	}
-
-	if !itemsByID[parentWithPending.ID].hasPending {
-		t.Fatalf("expected parent with pending suggestion to be marked")
+	if _, ok := itemsByID[parentWithPending.ID]; !ok {
+		t.Fatalf("expected parent %q in list", parentWithPending.ID)
 	}
-	if itemsByID[parentWithPending.ID].suggestionStatus != evolution.SuggestionStatusPendingReview {
-		t.Fatalf("expected parent suggestion_status pending_review, got %q", itemsByID[parentWithPending.ID].suggestionStatus)
+	if _, ok := itemsByID[parentAcceptedOnly.ID]; !ok {
+		t.Fatalf("expected parent %q in list", parentAcceptedOnly.ID)
+	}
+
+	if itemsByID[parentWithPending.ID].hasPending {
+		t.Fatalf("expected parent with legacy pending suggestion not to be marked")
+	}
+	if itemsByID[parentWithPending.ID].reviewStatus != reviewStatusNone {
+		t.Fatalf("expected parent review_status none, got %q", itemsByID[parentWithPending.ID].reviewStatus)
 	}
 	if itemsByID[parentWithPending.ID].children[childWithPending.ID].hasPending {
-		t.Fatalf("expected child not to inherit parent pending suggestion mark")
+		t.Fatalf("expected child not to inherit legacy parent pending suggestion mark")
 	}
-	if itemsByID[parentWithPending.ID].children[childWithPending.ID].suggestionStatus != evolution.SuggestionStatusNone {
-		t.Fatalf("expected child suggestion_status none, got %q", itemsByID[parentWithPending.ID].children[childWithPending.ID].suggestionStatus)
+	if itemsByID[parentWithPending.ID].children[childWithPending.ID].reviewStatus != reviewStatusNone {
+		t.Fatalf("expected child review_status none, got %q", itemsByID[parentWithPending.ID].children[childWithPending.ID].reviewStatus)
 	}
 	if itemsByID[parentAcceptedOnly.ID].hasPending {
 		t.Fatalf("expected accepted-only parent not to be marked as pending")
 	}
-	if itemsByID[parentAcceptedOnly.ID].suggestionStatus != evolution.SuggestionStatusAccepted {
-		t.Fatalf("expected accepted-only parent suggestion_status accepted, got %q", itemsByID[parentAcceptedOnly.ID].suggestionStatus)
+	if itemsByID[parentAcceptedOnly.ID].reviewStatus != reviewStatusNone {
+		t.Fatalf("expected accepted-only parent review_status none, got %q", itemsByID[parentAcceptedOnly.ID].reviewStatus)
+	}
+}
+
+func TestListSkillMarksPendingPatchReviewResult(t *testing.T) {
+	db := newSkillTestDB(t)
+	store.Init(db.DB, nil, nil)
+	t.Cleanup(func() { store.Init(nil, nil, nil) })
+
+	now := time.Now()
+	parent := orm.SkillResource{
+		ID:              "skill-parent-review-result",
+		OwnerUserID:     "u1",
+		OwnerUserName:   "User 1",
+		Category:        "coding",
+		ParentSkillName: "git-workflow",
+		SkillName:       "git-workflow",
+		NodeType:        evolution.SkillNodeTypeParent,
+		FileExt:         "md",
+		RelativePath:    evolution.ParentSkillRelativePath("coding", "git-workflow"),
+		Content:         "---\nname: git-workflow\ndescription: git workflow\n---\nbody",
+		ContentHash:     evolution.HashContent("body"),
+		Version:         1,
+		IsEnabled:       true,
+		UpdateStatus:    evolution.UpdateStatusUpToDate,
+		CreateUserID:    "u1",
+		CreateUserName:  "User 1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	child := orm.SkillResource{
+		ID:              "skill-child-review-result",
+		OwnerUserID:     "u1",
+		OwnerUserName:   "User 1",
+		Category:        "coding",
+		ParentSkillName: "git-workflow",
+		SkillName:       "rules",
+		NodeType:        evolution.SkillNodeTypeChild,
+		FileExt:         "md",
+		RelativePath:    "coding/git-workflow/rules.md",
+		Content:         "child body",
+		ContentHash:     evolution.HashContent("child body"),
+		Version:         1,
+		IsEnabled:       true,
+		UpdateStatus:    evolution.UpdateStatusUpToDate,
+		CreateUserID:    "u1",
+		CreateUserName:  "User 1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := db.Create(&parent).Error; err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := db.Create(&child).Error; err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := db.Create(&orm.SkillReviewResult{
+		ID:           "review-result-pending",
+		SkillName:    "git-workflow",
+		Type:         "patch",
+		ReviewStatus: "pending",
+		UserID:       "u1",
+		SkillContent: "---\nname: git-workflow\ndescription: git workflow\n---\nupdated body",
+		Time:         now,
+	}).Error; err != nil {
+		t.Fatalf("create review result: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/core/skills?page=1&page_size=20", nil)
+	req.Header.Set("X-User-Id", "u1")
+	rec := httptest.NewRecorder()
+
+	List(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp listSkillsAPITestResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Fatalf("expected code 0, got %d message=%s", resp.Code, resp.Message)
+	}
+	var item struct {
+		SkillID                string   `json:"skill_id"`
+		Description            string   `json:"description"`
+		Tags                   []string `json:"tags"`
+		UpdateStatus           string   `json:"update_status"`
+		HasPendingReviewResult bool     `json:"has_pending_review_result"`
+		ReviewStatus           string   `json:"review_status"`
+		Children               []struct {
+			SkillID                string   `json:"skill_id"`
+			Description            string   `json:"description"`
+			Tags                   []string `json:"tags"`
+			UpdateStatus           string   `json:"update_status"`
+			HasPendingReviewResult bool     `json:"has_pending_review_result"`
+			ReviewStatus           string   `json:"review_status"`
+		} `json:"children"`
+	}
+	for _, candidate := range resp.Data.Items {
+		if candidate.SkillID == parent.ID {
+			item = candidate
+			break
+		}
+	}
+	if item.SkillID == "" {
+		t.Fatalf("expected parent %q in list, got %#v", parent.ID, resp.Data.Items)
+	}
+	if !item.HasPendingReviewResult {
+		t.Fatalf("expected parent to be marked by pending review result")
+	}
+	if item.ReviewStatus != reviewStatusPending {
+		t.Fatalf("expected parent review_status pending, got %q", item.ReviewStatus)
+	}
+	if len(item.Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(item.Children))
+	}
+	if item.Children[0].HasPendingReviewResult {
+		t.Fatalf("expected child not to inherit pending review result")
+	}
+	if item.Children[0].ReviewStatus != reviewStatusNone {
+		t.Fatalf("expected child review_status none, got %q", item.Children[0].ReviewStatus)
 	}
 }
 
@@ -1841,24 +1990,45 @@ func TestListIgnoresNameOnlySkillSuggestionsWithoutResourceKey(t *testing.T) {
 	if resp.Code != 0 {
 		t.Fatalf("expected code 0, got %d message=%s", resp.Code, resp.Message)
 	}
-	if len(resp.Data.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp.Data.Items))
+	var item struct {
+		SkillID                string   `json:"skill_id"`
+		Description            string   `json:"description"`
+		Tags                   []string `json:"tags"`
+		UpdateStatus           string   `json:"update_status"`
+		HasPendingReviewResult bool     `json:"has_pending_review_result"`
+		ReviewStatus           string   `json:"review_status"`
+		Children               []struct {
+			SkillID                string   `json:"skill_id"`
+			Description            string   `json:"description"`
+			Tags                   []string `json:"tags"`
+			UpdateStatus           string   `json:"update_status"`
+			HasPendingReviewResult bool     `json:"has_pending_review_result"`
+			ReviewStatus           string   `json:"review_status"`
+		} `json:"children"`
 	}
-	item := resp.Data.Items[0]
-	if item.HasPendingReviewSuggestions {
+	for _, candidate := range resp.Data.Items {
+		if candidate.SkillID == parent.ID {
+			item = candidate
+			break
+		}
+	}
+	if item.SkillID == "" {
+		t.Fatalf("expected parent %q in list, got %#v", parent.ID, resp.Data.Items)
+	}
+	if item.HasPendingReviewResult {
 		t.Fatalf("expected parent not to be marked by name-only suggestion")
 	}
-	if item.SuggestionStatus != evolution.SuggestionStatusNone {
-		t.Fatalf("expected parent suggestion_status none, got %q", item.SuggestionStatus)
+	if item.ReviewStatus != reviewStatusNone {
+		t.Fatalf("expected parent review_status none, got %q", item.ReviewStatus)
 	}
 	if len(item.Children) != 1 {
 		t.Fatalf("expected 1 child, got %d", len(item.Children))
 	}
-	if item.Children[0].HasPendingReviewSuggestions {
+	if item.Children[0].HasPendingReviewResult {
 		t.Fatalf("expected child not to inherit legacy parent pending suggestion mark")
 	}
-	if item.Children[0].SuggestionStatus != evolution.SuggestionStatusNone {
-		t.Fatalf("expected child suggestion_status none, got %q", item.Children[0].SuggestionStatus)
+	if item.Children[0].ReviewStatus != reviewStatusNone {
+		t.Fatalf("expected child review_status none, got %q", item.Children[0].ReviewStatus)
 	}
 }
 
@@ -1966,11 +2136,11 @@ func TestGetChildDetailDoesNotInheritPendingReviewSuggestionsFromParent(t *testi
 	if resp.Data.SkillID != child.ID {
 		t.Fatalf("expected child skill id %q, got %q", child.ID, resp.Data.SkillID)
 	}
-	if resp.Data.HasPendingReviewSuggestions {
+	if resp.Data.HasPendingReviewResult {
 		t.Fatalf("expected child detail not to inherit pending review suggestion flag")
 	}
-	if resp.Data.SuggestionStatus != evolution.SuggestionStatusNone {
-		t.Fatalf("expected child detail suggestion_status none, got %q", resp.Data.SuggestionStatus)
+	if resp.Data.ReviewStatus != reviewStatusNone {
+		t.Fatalf("expected child detail review_status none, got %q", resp.Data.ReviewStatus)
 	}
 	if len(resp.Data.Children) != 0 {
 		t.Fatalf("expected child detail to have no children, got %d", len(resp.Data.Children))
@@ -2557,6 +2727,54 @@ func TestUpdateParentSkillAllowsDuplicateParentNameAcrossCategories(t *testing.T
 	}
 	if updated.SkillName != "git-workflow" || updated.Category != "ops" {
 		t.Fatalf("expected skill identity ops/git-workflow, got %q/%q", updated.Category, updated.SkillName)
+	}
+}
+
+func TestUpdateParentSkillMetadataOnlyDoesNotCreateResourceVersion(t *testing.T) {
+	db := newSkillTestDB(t)
+
+	createReq := createSkillRequest{
+		Name:        "git-workflow",
+		Description: "Git workflow for postman test",
+		Category:    "coding",
+		Content:     "# Git Workflow\n\nKeep commit history clean and easy to review.",
+	}
+	if err := createParentSkill(context.Background(), db.DB, "u1", "User 1", createReq); err != nil {
+		t.Fatalf("create parent skill: %v", err)
+	}
+
+	var row orm.SkillResource
+	if err := db.Where("owner_user_id = ? AND node_type = ?", "u1", evolution.SkillNodeTypeParent).Take(&row).Error; err != nil {
+		t.Fatalf("query parent skill: %v", err)
+	}
+	if got := countSkillResourceVersions(t, db, row.ID); got != 1 {
+		t.Fatalf("expected create to write 1 resource version, got %d", got)
+	}
+
+	description := "Updated git workflow"
+	if err := updateSkill(context.Background(), db.DB, "u1", "User 1", row.ID, updateSkillRequest{Description: &description}); err != nil {
+		t.Fatalf("update parent skill description: %v", err)
+	}
+	if got := countSkillResourceVersions(t, db, row.ID); got != 1 {
+		t.Fatalf("expected metadata-only update to keep 1 resource version, got %d", got)
+	}
+
+	content := "# Git Workflow\n\nUse small, reviewable commits."
+	if err := updateSkill(context.Background(), db.DB, "u1", "User 1", row.ID, updateSkillRequest{Content: &content}); err != nil {
+		t.Fatalf("update parent skill content: %v", err)
+	}
+	if got := countSkillResourceVersions(t, db, row.ID); got != 2 {
+		t.Fatalf("expected content update to write second resource version, got %d", got)
+	}
+	var latest orm.ResourceVersion
+	if err := db.Where("resource_id = ?", row.ID).Order("created_at DESC, id DESC").Take(&latest).Error; err != nil {
+		t.Fatalf("query latest resource version: %v", err)
+	}
+	if latest.ChangeSource != resourcechange.ChangeSourceDirectSave {
+		t.Fatalf("expected direct_save version source, got %q", latest.ChangeSource)
+	}
+	if !strings.Contains(latest.Diff, "+Use small, reviewable commits.") {
+		t.Fatalf("expected latest diff to include content body update, got %q", latest.Diff)
 	}
 }
 
@@ -3377,4 +3595,13 @@ func TestDeleteParentSkillRemovesRelatedSuggestions(t *testing.T) {
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func countSkillResourceVersions(t *testing.T, db *orm.DB, resourceID string) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&orm.ResourceVersion{}).Where("resource_id = ?", resourceID).Count(&count).Error; err != nil {
+		t.Fatalf("count resource versions: %v", err)
+	}
+	return count
 }
