@@ -113,7 +113,7 @@ def skill_editor(
             )
         pending = find_pending_skill_review(content_category, content_name, user_id)
         if pending or existing_skill:
-            return _pending_review_error()
+            return tool_error('skill_editor', _PENDING_CHANGE_MESSAGE)
 
         create_remote_skill(content_category, content_name, content or '')
         return tool_success('skill_editor', _SUCCESS_MESSAGE)
@@ -158,7 +158,7 @@ def skill_editor(
         edited_category, edited_name = _skill_identity_from_content(edited_content)
         pending = find_pending_skill_review(edited_category, edited_name, user_id)
         if pending:
-            return _pending_review_error()
+            return tool_error('skill_editor', _PENDING_CHANGE_MESSAGE)
 
         insert_skill_review_result(
             category=normalized_category,
@@ -190,7 +190,7 @@ def skill_editor(
 
         pending = find_pending_skill_review(normalized_category, name, user_id)
         if pending:
-            return _pending_review_error()
+            return tool_error('skill_editor', _PENDING_CHANGE_MESSAGE)
 
         remove_remote_skill(normalized_category, name)
         return tool_success('skill_editor', _SUCCESS_MESSAGE)
@@ -199,10 +199,6 @@ def skill_editor(
         'skill_editor',
         f"Unknown action {action!r}; expected one of 'create', 'modify', 'remove'."
     )
-
-
-def _pending_review_error() -> Dict[str, Any]:
-    return tool_error('skill_editor', _PENDING_CHANGE_MESSAGE)
 
 
 def _skill_identity_from_content(content: str) -> tuple[str, str]:

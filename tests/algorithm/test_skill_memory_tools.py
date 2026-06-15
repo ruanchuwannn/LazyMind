@@ -1,9 +1,8 @@
-import importlib
 import sys
 from types import ModuleType
 
-memory_mod = importlib.import_module('lazymind.chat.engine.tools.memory_editor')
-skill_editor_mod = importlib.import_module('lazymind.chat.engine.tools.skill_editor')
+import lazymind.chat.engine.tools.memory_editor as memory_mod
+import lazymind.chat.engine.tools.skill_editor as skill_editor_mod
 
 
 def test_memory_editor_operations_write_memory_review(monkeypatch):
