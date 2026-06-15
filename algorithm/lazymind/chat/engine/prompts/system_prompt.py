@@ -13,6 +13,16 @@ from .guidance import (
 )
 
 
+_GUIDANCE_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (VOCAB_GUIDANCE, ('vocab_learn',)),
+    (MEMORY_GUIDANCE, ('memory_editor',)),
+    (SKILLS_GUIDANCE, ('skill_editor',)),
+    (SEARCH_GUIDANCE, ('kb', 'temp_kb')),
+    (IMAGE_REFERENCE_MARKDOWN_GUIDANCE, ('kb', 'temp_kb', 'web_search', 'academic_search', 'url_fetch')),
+    (VISION_EXTRACTOR_GUIDANCE, ('multimodal',)),
+)
+
+
 def _build_environment_context_prompt(environment_context: dict | None = None) -> str:
     time_now = None
     timezone = None
@@ -73,22 +83,13 @@ def build_system_prompt(
         if isinstance(memory, str) and memory.strip():
             prompt_parts.append(f'## Agent Working Memory\n{memory.strip()}')
 
-    tool_guidance: list[str] = []
-    if 'vocab_learn' in active_groups:
-        tool_guidance.append(VOCAB_GUIDANCE)
-    if 'memory_editor' in active_groups and use_memory:
-        tool_guidance.append(MEMORY_GUIDANCE)
-    if 'skill_editor' in active_groups:
-        tool_guidance.append(SKILLS_GUIDANCE)
-    if tool_guidance:
-        prompt_parts.append(' '.join(tool_guidance))
+    prompt_parts.extend(
+        guidance
+        for guidance, required_tools in _GUIDANCE_REQUIREMENTS
+        if active_groups.intersection(required_tools)
+        and (guidance != MEMORY_GUIDANCE or use_memory)
+    )
     if active_groups:
         prompt_parts.append(TOOL_CALL_STATUS_GUIDANCE)
-    if 'kb' in active_groups or 'temp_kb' in active_groups:
-        prompt_parts.append(SEARCH_GUIDANCE)
-    if files:
-        prompt_parts.append(IMAGE_REFERENCE_MARKDOWN_GUIDANCE)
-    if 'multimodal' in active_groups:
-        prompt_parts.append(VISION_EXTRACTOR_GUIDANCE)
 
     return '\n\n'.join(prompt_parts)

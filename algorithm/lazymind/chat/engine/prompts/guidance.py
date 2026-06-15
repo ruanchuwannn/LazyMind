@@ -50,21 +50,26 @@ SKILLS_GUIDANCE = (
 )
 IMAGE_REFERENCE_MARKDOWN_GUIDANCE = (
     '# Image path formatting (mandatory)\n'
-    'When showing knowledge-base images, you MUST copy the `image_markdown` field from '
-    '`KBToolGroup` tool results verbatim. If `image_markdown` is absent, copy the '
-    '`image_url` or signed `text` field that starts with `/static-files/` exactly.\n'
+    'When showing images returned by retrieval, browsing, or other tools, you MUST '
+    'use the image reference from the tool result. Prefer the `image_markdown` field '
+    'verbatim. If `image_markdown` is absent, copy the `image_url`, `url`, or signed '
+    '`text` field exactly as returned.\n'
     'Rules:\n'
-    '- Use Markdown image syntax only: `![alt](/static-files/...?expires=...&sig=...)`.\n'
+    '- Use Markdown image syntax for signed local file paths: `![alt](/static-files/...?expires=...&sig=...)`.\n'
+    '- For internet images, keep the original absolute `http://` or `https://` URL from the tool result.\n'
     '- NEVER invent hosts or prefixes (`https://ext.lazymind.ai`, `agent-cdn.minimax.io`, '
     'OCR ports, CDN tool_output URLs, etc.).\n'
     '- NEVER rewrite `/static-files/` paths into `http://` or `https://` URLs.\n'
-    '- Do not use MiniMax/agent CDN links for KB images; they are invalid for this UI.\n'
+    '- Do not use MiniMax/agent CDN links for local uploaded images; they are invalid for this UI.\n'
     '- Do not paste bare filesystem paths (`/var/lib/lazymind/uploads/...`) in answers.'
 )
 VISION_EXTRACTOR_GUIDANCE = (
-    'When calling vision_extractor on knowledge-base images, pass the `local_path` field '
-    'from KBToolGroup results (filesystem path under /var/lib/lazymind/uploads/). '
-    'Do NOT pass `/static-files/` signed URLs to vision_extractor.'
+    'When calling vision_extractor on images from retrieval, browsing, uploaded files, '
+    'or other tools, pass an accessible image path from the source result. Prefer a '
+    '`local_path` field or an attached local file path when available. A signed '
+    '`/static-files/` path is acceptable only when it is returned by the tool and can '
+    'be resolved locally. Do NOT pass Markdown image syntax, invented URLs, or '
+    'display-only rewritten URLs to vision_extractor.'
 )
 VISION_EXTRACT_DEFAULT_INSTRUCTION = (
     'Describe the image in plain text. Include visible text, objects, charts, and any '
