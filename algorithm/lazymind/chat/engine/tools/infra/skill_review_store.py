@@ -95,6 +95,7 @@ def insert_skill_review_result(
         ).mappings().one()
     return _jsonable_row(dict(row))
 
+
 def _get_app_conn() -> Engine:
     core_db_url = _get_core_db_url()
     if core_db_url:

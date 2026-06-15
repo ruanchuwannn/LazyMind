@@ -172,7 +172,7 @@ def skill_editor(
             skill_content=edited_content,
             user_id=user_id,
             requestid=session_id,
-            summary=f'skill_editor operations: {len(operation_payload)}',
+            summary=reason or f'skill_editor operations: {len(operation_payload)}',
         )
         return tool_success('skill_editor', _SUCCESS_MESSAGE)
 

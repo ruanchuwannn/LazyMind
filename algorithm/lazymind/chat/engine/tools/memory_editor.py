@@ -8,6 +8,13 @@ from lazymind.chat.engine.tools.infra import (
     tool_error,
     tool_success,
 )
+from lazymind.rewrite.base import (
+    UnprocessableContentError,
+    _validate_generated_content,
+)
+from lazymind.rewrite.memory import _apply_memory_edit_operations
+from lazymind.rewrite.preference import _apply_user_preference_edit_operations
+from lazymind.review.memory_review.db import insert_memory_review_record
 
 
 class EditOperation(TypedDict, total=False):
@@ -79,13 +86,6 @@ def memory_editor(
     storage_target = 'user_preference' if raw_target == 'user' else raw_target
     current_content = agentic_config.get(raw_target) or ''
     operation_payload = [dict(op) for op in operations]
-    from lazymind.rewrite.base import (
-        UnprocessableContentError,
-        _validate_generated_content,
-    )
-    from lazymind.rewrite.memory import _apply_memory_edit_operations
-    from lazymind.rewrite.preference import _apply_user_preference_edit_operations
-
     try:
         apply_operations = (
             _apply_user_preference_edit_operations
@@ -101,8 +101,6 @@ def memory_editor(
         edited_content = _validate_generated_content(storage_target, edited_content)
     except UnprocessableContentError as exc:
         return tool_error('memory_editor', str(exc))
-
-    from lazymind.review.memory_review.db import insert_memory_review_record
 
     record = insert_memory_review_record(
         target=storage_target,
