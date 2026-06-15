@@ -2,8 +2,7 @@ import sys
 from types import ModuleType
 
 import lazymind.chat.engine.tools.memory_editor as memory_mod
-from lazymind.chat.engine.tools import skill_editor as skill_editor_mod
-from lazymind.chat.engine.tools.infra.suggestion import Suggestion
+import lazymind.chat.engine.tools.skill_editor as skill_editor_mod
 
 
 def test_memory_editor_operations_write_memory_review(monkeypatch):
@@ -91,15 +90,46 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
     ]
 
 
-def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
-    calls = []
+def test_skill_editor_create_modify_remove_write_skill_review_results(monkeypatch):
+    records = []
+    delete_calls = []
 
-    def fake_post_core_api(path, payload):
-        calls.append((path, payload))
-        return {'persisted': 'core_api', 'url': f'http://core{path}'}
+    def fake_insert_skill_review_result(**kwargs):
+        records.append(kwargs)
+        return {
+            'id': f'review-{len(records)}',
+            'review_status': 'pending',
+            'type': kwargs['review_type'],
+        }
 
-    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
-    monkeypatch.setattr(skill_editor_mod, 'post_core_api', fake_post_core_api)
+    def fake_mark_skill_review_delete(**kwargs):
+        delete_calls.append(kwargs)
+        return {'id': 'review-delete', 'review_status': 'pending', 'type': 'delete'}
+
+    def fake_apply_skill_edit_operations(current, operations):
+        return (
+            current.replace('Use this skill for tests.', 'Use this skill for focused tests.'),
+            [dict(op) for op in operations],
+        )
+
+    monkeypatch.setattr(
+        skill_editor_mod.lazyllm,
+        'globals',
+        {'agentic_config': {'user_id': 'user-1'}},
+    )
+    monkeypatch.setattr(skill_editor_mod, 'insert_skill_review_result', fake_insert_skill_review_result)
+    monkeypatch.setattr(skill_editor_mod, 'mark_skill_review_delete', fake_mark_skill_review_delete)
+    monkeypatch.setattr(skill_editor_mod, 'find_pending_skill_review', lambda category, name: None)
+    monkeypatch.setattr(skill_editor_mod, 'apply_skill_edit_operations', fake_apply_skill_edit_operations)
+
+    existing_content = (
+        '---\n'
+        'name: existing\n'
+        'category: writing\n'
+        'description: Existing skill.\n'
+        '---\n'
+        'Use this skill for tests.\n'
+    )
     monkeypatch.setattr(
         skill_editor_mod,
         'list_all_skill_entries',
@@ -109,6 +139,7 @@ def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
                 'category': 'writing',
                 'path': '/tmp/skills/writing/existing',
                 'source': 'remote',
+                'content': existing_content,
             }
         },
     )
@@ -116,12 +147,11 @@ def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
     content = (
         '---\n'
         'name: new_skill\n'
+        'category: drafts\n'
         'description: A test skill.\n'
         '---\n'
         'Use this skill for tests.\n'
     )
-    suggestion = Suggestion(title='Update instructions', content='Tighten the wording.')
-
     create_result = skill_editor_mod.skill_editor(
         'new_skill',
         'create',
@@ -132,7 +162,13 @@ def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
         'existing',
         'modify',
         category='writing',
-        suggestions=[suggestion],
+        operations=[
+            {
+                'op': 'replace_text',
+                'old': 'Use this skill for tests.',
+                'new': 'Use this skill for focused tests.',
+            }
+        ],
     )
     remove_result = skill_editor_mod.skill_editor('existing', 'remove', category='writing')
 
@@ -142,44 +178,51 @@ def test_skill_editor_create_modify_remove_use_core_api_paths(monkeypatch):
     assert modify_result['tool'] == 'skill_editor'
     assert remove_result['success'] is True
     assert remove_result['tool'] == 'skill_editor'
-    assert calls == [
-        (
-            '/skill/create',
-            {
-                'session_id': 'sid-1',
-                'category': 'drafts',
-                'skill_name': 'new_skill',
-                'content': content,
-            },
-        ),
-        (
-            '/skill/suggestion',
-            {
-                'session_id': 'sid-1',
-                'skill_name': 'existing',
-                'category': 'writing',
-                'suggestions': [{'title': 'Update instructions', 'content': 'Tighten the wording.'}],
-            },
-        ),
-        (
-            '/skill/remove',
-            {'session_id': 'sid-1', 'skill_name': 'existing', 'category': 'writing', 'reason': ''},
-        ),
+    assert create_result['result']['persisted'] == 'skill_review_results'
+    assert modify_result['result']['persisted'] == 'skill_review_results'
+    assert remove_result['result']['type'] == 'delete'
+    assert records == [
+        {
+            'category': 'drafts',
+            'skill_name': 'new_skill',
+            'review_type': 'new',
+            'skill_content': content,
+            'user_id': 'user-1',
+        },
+        {
+            'category': 'writing',
+            'skill_name': 'existing',
+            'review_type': 'patch',
+            'skill_content': existing_content.replace(
+                'Use this skill for tests.',
+                'Use this skill for focused tests.',
+            ),
+            'user_id': 'user-1',
+            'summary': 'skill_editor operations: 1',
+        },
+    ]
+    assert delete_calls == [
+        {
+            'category': 'writing',
+            'skill_name': 'existing',
+            'user_id': 'user-1',
+            'summary': None,
+        }
     ]
 
 
-def test_skill_editor_rejects_missing_skill_without_post(monkeypatch):
+def test_skill_editor_rejects_missing_skill_without_write(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {'session_id': 'sid-1'}})
-    monkeypatch.setattr(skill_editor_mod, 'post_core_api', lambda path, payload: calls.append((path, payload)))
+    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {}})
+    monkeypatch.setattr(skill_editor_mod, 'insert_skill_review_result', lambda **kwargs: calls.append(kwargs))
     monkeypatch.setattr(skill_editor_mod, 'list_all_skill_entries', lambda _base_dir: {})
 
     result = skill_editor_mod.skill_editor(
         'missing',
         'modify',
         category='writing',
-        suggestions=[{'title': 'Update instructions', 'content': 'Tighten the wording.'}],
+        operations=[{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
     )
 
     assert result == {
@@ -190,3 +233,49 @@ def test_skill_editor_rejects_missing_skill_without_post(monkeypatch):
         },
     }
     assert calls == []
+
+
+def test_skill_editor_blocks_modify_and_remove_when_pending_review_exists(monkeypatch):
+    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {}})
+    monkeypatch.setattr(
+        skill_editor_mod,
+        'list_all_skill_entries',
+        lambda _base_dir: {
+            'writing/existing': {
+                'name': 'existing',
+                'category': 'writing',
+                'path': '/tmp/skills/writing/existing',
+                'source': 'remote',
+                'content': (
+                    '---\n'
+                    'name: existing\n'
+                    'category: writing\n'
+                    'description: Existing skill.\n'
+                    '---\n'
+                    'Use this skill for tests.\n'
+                ),
+            }
+        },
+    )
+    monkeypatch.setattr(
+        skill_editor_mod,
+        'find_pending_skill_review',
+        lambda category, name: {'id': 'pending-1', 'category': category, 'skill_name': name},
+    )
+
+    modify_result = skill_editor_mod.skill_editor(
+        'existing',
+        'modify',
+        category='writing',
+        operations=[{'op': 'replace_text', 'old': 'old', 'new': 'new'}],
+    )
+    remove_result = skill_editor_mod.skill_editor('existing', 'remove', category='writing')
+
+    assert modify_result['success'] is False
+    assert modify_result['tool'] == 'skill_editor'
+    assert 'pending in skill_review_results' in modify_result['error']['reason']
+    assert modify_result['meta'] == {'pending_record_id': 'pending-1'}
+    assert remove_result['success'] is False
+    assert remove_result['tool'] == 'skill_editor'
+    assert 'pending in skill_review_results' in remove_result['error']['reason']
+    assert remove_result['meta'] == {'pending_record_id': 'pending-1'}
