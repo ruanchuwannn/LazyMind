@@ -14,6 +14,7 @@ import (
 	"lazymind/core/common"
 	"lazymind/core/common/orm"
 	"lazymind/core/evolution"
+	"lazymind/core/resourcechange"
 	"lazymind/core/store"
 )
 
@@ -230,7 +231,7 @@ func RemoteFSWrite(w http.ResponseWriter, r *http.Request) {
 		Category:    parsed.category,
 		Content:     content,
 	}
-	if err := createParentSkillWithContent(r.Context(), db, userID, userName, createReq, content, description); err != nil {
+	if err := createParentSkillWithContent(r.Context(), db, userID, userName, createReq, content, description, resourcechange.Source{ChangeSource: resourcechange.ChangeSourceDirectSave}); err != nil {
 		replySkillError(w, err)
 		return
 	}
@@ -268,7 +269,7 @@ func RemoteFSDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := deleteParentSkill(r.Context(), db, userID, &parent); err != nil {
+	if err := deleteParentSkill(r.Context(), db, userID, &parent, resourcechange.Source{ChangeSource: resourcechange.ChangeSourceDirectSave}); err != nil {
 		common.ReplyErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
