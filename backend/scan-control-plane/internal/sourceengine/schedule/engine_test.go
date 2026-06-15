@@ -9,7 +9,7 @@ import (
 	store "github.com/lazymind/scan_control_plane/internal/store/source"
 )
 
-func TestCheckpointScheduleEngineEnqueuesManualRunAndDedupesActiveRun(t *testing.T) {
+func TestCheckpointScheduleEngineEnqueuesManualRunAndAllowsDistinctActiveManualScopes(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -33,12 +33,17 @@ func TestCheckpointScheduleEngineEnqueuesManualRunAndDedupesActiveRun(t *testing
 		t.Fatalf("manual run fields not preserved: %+v", first.Run)
 	}
 
-	second, err := engine.EnqueueManualSync(ctx, ManualSyncRequest{SourceID: "source-1", BindingID: "binding-1"})
+	second, err := engine.EnqueueManualSync(ctx, ManualSyncRequest{
+		SourceID:  "source-1",
+		BindingID: "binding-1",
+		ScopeType: connector.ScopeTypePartial,
+		ScopeRef:  connector.ScopeRef{"root_object_key": "folder-2"},
+	})
 	if err != nil {
-		t.Fatalf("enqueue duplicate manual sync: %v", err)
+		t.Fatalf("enqueue second manual sync: %v", err)
 	}
-	if second.Created || second.Run.RunID != first.Run.RunID {
-		t.Fatalf("expected active manual run reuse, first=%+v second=%+v", first, second)
+	if !second.Created || second.Run.RunID == first.Run.RunID {
+		t.Fatalf("expected distinct active manual scopes to queue separately, first=%+v second=%+v", first, second)
 	}
 }
 
@@ -89,6 +94,157 @@ func TestCheckpointScheduleEngineEnqueuesWatchDueRunsAsReconcile(t *testing.T) {
 	}
 	if len(intents) != 1 || intents[0].Run.TriggerType != TriggerTypeReconcile || intents[0].Run.ScopeType != string(connector.ScopeTypeFull) {
 		t.Fatalf("watch due run should be full reconcile, got %+v", intents)
+	}
+}
+
+func TestCheckpointScheduleEngineEnqueuesWatchEventRun(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := scheduleTestTime()
+	occurredAt := now.Add(-2 * time.Minute)
+	repo := newScheduleStore(store.Binding{SyncMode: SyncModeWatch}, nil, now)
+	engine := NewCheckpointScheduleEngine(repo, repo, WithClock(func() time.Time { return now }), WithIDGenerator(scheduleIDs()))
+
+	intent, err := engine.EnqueueWatchEventSync(ctx, WatchEventSyncRequest{
+		Binding:    repo.binding,
+		ObjectKey:  "local_fs:agent-1:path:/workspace/docs/a.md",
+		Path:       "/workspace/docs/a.md",
+		EventType:  "modified",
+		OccurredAt: occurredAt,
+	})
+	if err != nil {
+		t.Fatalf("enqueue watch event sync: %v", err)
+	}
+	if !intent.Created {
+		t.Fatalf("expected watch event run to be created: %+v", intent)
+	}
+	run := intent.Run
+	if run.TriggerType != TriggerTypeWatch || run.ScopeType != string(connector.ScopeTypeWatchEvent) {
+		t.Fatalf("watch event run has wrong trigger/scope: %+v", run)
+	}
+	if run.StartedAt != occurredAt || run.ScheduledFireAt == nil || !run.ScheduledFireAt.Equal(occurredAt) {
+		t.Fatalf("watch event run did not preserve occurred_at: %+v want=%v", run, occurredAt)
+	}
+	if run.ScopeRef["object_key"] != "local_fs:agent-1:path:/workspace/docs/a.md" || run.ScopeRef["event_type"] != "modified" {
+		t.Fatalf("watch event scope_ref lost event identity: %+v", run.ScopeRef)
+	}
+}
+
+func TestCheckpointScheduleEngineEnqueuesManualBindingFileEventRun(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := scheduleTestTime()
+	occurredAt := now.Add(-2 * time.Minute)
+	repo := newScheduleStore(store.Binding{SyncMode: SyncModeManual}, nil, now)
+	engine := NewCheckpointScheduleEngine(repo, repo, WithClock(func() time.Time { return now }), WithIDGenerator(scheduleIDs()))
+
+	intent, err := engine.EnqueueWatchEventSync(ctx, WatchEventSyncRequest{
+		Binding:    repo.binding,
+		ObjectKey:  "local_fs:agent-1:path:/workspace/docs/a.md",
+		Path:       "/workspace/docs/a.md",
+		EventType:  "modified",
+		OccurredAt: occurredAt,
+	})
+	if err != nil {
+		t.Fatalf("enqueue manual file event detection: %v", err)
+	}
+	if !intent.Created || intent.Run.TriggerType != TriggerTypeWatch || intent.Run.ScopeType != string(connector.ScopeTypeWatchEvent) {
+		t.Fatalf("manual file event should create a watch_event detection run: %+v", intent)
+	}
+	if intent.Run.ScheduledFireAt == nil || !intent.Run.ScheduledFireAt.Equal(occurredAt) {
+		t.Fatalf("manual file event run lost occurred_at: %+v", intent.Run)
+	}
+}
+
+func TestCheckpointScheduleEngineDoesNotDedupeDistinctWatchEventRuns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := scheduleTestTime()
+	repo := newScheduleStore(store.Binding{SyncMode: SyncModeWatch}, nil, now)
+	engine := NewCheckpointScheduleEngine(repo, repo, WithClock(func() time.Time { return now }), WithIDGenerator(scheduleIDs()))
+
+	first, err := engine.EnqueueWatchEventSync(ctx, WatchEventSyncRequest{
+		Binding:    repo.binding,
+		ObjectKey:  "local_fs:agent-1:path:/workspace/docs/a.md",
+		Path:       "/workspace/docs/a.md",
+		EventType:  "modified",
+		OccurredAt: now,
+	})
+	if err != nil {
+		t.Fatalf("enqueue first watch event sync: %v", err)
+	}
+	second, err := engine.EnqueueWatchEventSync(ctx, WatchEventSyncRequest{
+		Binding:    repo.binding,
+		ObjectKey:  "local_fs:agent-1:path:/workspace/docs/b.md",
+		Path:       "/workspace/docs/b.md",
+		EventType:  "modified",
+		OccurredAt: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("enqueue second watch event sync: %v", err)
+	}
+	if !first.Created || !second.Created || first.Run.RunID == second.Run.RunID {
+		t.Fatalf("distinct watch events should queue independently, first=%+v second=%+v", first, second)
+	}
+	if len(repo.runs) != 2 {
+		t.Fatalf("expected two watch event runs, got %+v", repo.runs)
+	}
+}
+
+func TestCheckpointScheduleEngineKeepsFutureWatchEventRunnable(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := scheduleTestTime()
+	futureEventTime := now.Add(time.Hour)
+	repo := newScheduleStore(store.Binding{SyncMode: SyncModeWatch}, nil, now)
+	engine := NewCheckpointScheduleEngine(repo, repo, WithClock(func() time.Time { return now }), WithIDGenerator(scheduleIDs()))
+
+	intent, err := engine.EnqueueWatchEventSync(ctx, WatchEventSyncRequest{
+		Binding:    repo.binding,
+		ObjectKey:  "local_fs:agent-1:path:/workspace/docs/a.md",
+		Path:       "/workspace/docs/a.md",
+		EventType:  "modified",
+		OccurredAt: futureEventTime,
+	})
+	if err != nil {
+		t.Fatalf("enqueue watch event sync: %v", err)
+	}
+	if !intent.Run.StartedAt.Equal(now) {
+		t.Fatalf("future watch event should be runnable immediately, run=%+v now=%v", intent.Run, now)
+	}
+	if intent.Run.ScheduledFireAt == nil || !intent.Run.ScheduledFireAt.Equal(futureEventTime) {
+		t.Fatalf("future watch event metadata was not preserved: %+v want=%v", intent.Run, futureEventTime)
+	}
+	if intent.Run.ScopeRef["occurred_at"] != futureEventTime.Format(time.RFC3339Nano) {
+		t.Fatalf("scope_ref did not preserve future occurred_at: %+v", intent.Run.ScopeRef)
+	}
+}
+
+func TestCheckpointScheduleEngineTriggerInitialSyncEnqueuesScheduledBaseline(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := scheduleTestTime()
+	repo := newScheduleStore(store.Binding{
+		SyncMode:       SyncModeScheduled,
+		SchedulePolicy: testSchedulePolicy("UTC", testScheduleRule([]string{"everyday"}, "10:00:00")),
+	}, nil, now)
+	engine := NewCheckpointScheduleEngine(repo, repo, WithClock(func() time.Time { return now }), WithIDGenerator(scheduleIDs()))
+
+	ids, err := engine.TriggerInitialSync(ctx, repo.binding)
+	if err != nil {
+		t.Fatalf("trigger initial scheduled sync: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("expected scheduled initial sync run id, got %v", ids)
+	}
+	run := repo.runs[ids[0]]
+	if run.TriggerType != TriggerTypeManual || run.ScopeType != string(connector.ScopeTypeFull) || run.ScheduledFireAt != nil {
+		t.Fatalf("scheduled initial sync should be an immediate full baseline run: %+v", run)
 	}
 }
 
@@ -189,6 +345,88 @@ func TestCheckpointScheduleEngineFinishSuccessGeneratesPendingParseTasks(t *test
 	call := planner.calls[0]
 	if call.sourceID != "source-1" || call.bindingID != "binding-1" || call.runID != claimed.RunID {
 		t.Fatalf("pending task generation call lost sync context: %+v", call)
+	}
+}
+
+func TestCheckpointScheduleEngineFinishManualFileEventSkipsPendingParseTasks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := scheduleTestTime()
+	repo := newScheduleStore(store.Binding{SyncMode: SyncModeManual}, nil, now)
+	planner := &pendingTaskPlannerStub{}
+	engine := NewCheckpointScheduleEngine(
+		repo,
+		repo,
+		WithClock(func() time.Time { return now }),
+		WithIDGenerator(scheduleIDs()),
+		WithTaskPlanner(planner),
+	)
+	intent, err := engine.EnqueueWatchEventSync(ctx, WatchEventSyncRequest{
+		Binding:    repo.binding,
+		ObjectKey:  "local_fs:agent-1:path:/workspace/docs/a.md",
+		Path:       "/workspace/docs/a.md",
+		EventType:  "modified",
+		OccurredAt: now,
+	})
+	if err != nil {
+		t.Fatalf("enqueue manual file event detection: %v", err)
+	}
+	claimed := repo.claimRun(t, intent.Run.RunID, "worker-a")
+
+	_, ok, err := engine.FinishRun(ctx, FinishRunRequest{
+		RunID:         claimed.RunID,
+		WorkerID:      "worker-a",
+		SeenCount:     1,
+		ModifiedCount: 1,
+		Coverage:      store.JSON{"complete": true},
+	})
+	if err != nil || !ok {
+		t.Fatalf("finish manual file event run ok=%v err=%v", ok, err)
+	}
+	if len(planner.calls) != 0 {
+		t.Fatalf("manual file event detection should not generate parse tasks: %+v", planner.calls)
+	}
+}
+
+func TestCheckpointScheduleEngineFinishWatchFileEventGeneratesPendingParseTasks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := scheduleTestTime()
+	repo := newScheduleStore(store.Binding{SyncMode: SyncModeWatch}, nil, now)
+	planner := &pendingTaskPlannerStub{}
+	engine := NewCheckpointScheduleEngine(
+		repo,
+		repo,
+		WithClock(func() time.Time { return now }),
+		WithIDGenerator(scheduleIDs()),
+		WithTaskPlanner(planner),
+	)
+	intent, err := engine.EnqueueWatchEventSync(ctx, WatchEventSyncRequest{
+		Binding:    repo.binding,
+		ObjectKey:  "local_fs:agent-1:path:/workspace/docs/a.md",
+		Path:       "/workspace/docs/a.md",
+		EventType:  "modified",
+		OccurredAt: now,
+	})
+	if err != nil {
+		t.Fatalf("enqueue watch file event sync: %v", err)
+	}
+	claimed := repo.claimRun(t, intent.Run.RunID, "worker-a")
+
+	_, ok, err := engine.FinishRun(ctx, FinishRunRequest{
+		RunID:         claimed.RunID,
+		WorkerID:      "worker-a",
+		SeenCount:     1,
+		ModifiedCount: 1,
+		Coverage:      store.JSON{"complete": true},
+	})
+	if err != nil || !ok {
+		t.Fatalf("finish watch file event run ok=%v err=%v", ok, err)
+	}
+	if len(planner.calls) != 1 || planner.calls[0].runID != claimed.RunID {
+		t.Fatalf("watch file event sync should generate parse tasks: %+v", planner.calls)
 	}
 }
 
@@ -502,11 +740,16 @@ func (s *scheduleStore) ListDueSyncCheckpoints(_ context.Context, now time.Time,
 }
 
 func (s *scheduleStore) EnqueueSyncRun(_ context.Context, run store.SyncRun) (store.SyncRun, bool, error) {
-	for _, existing := range s.runs {
-		if existing.BindingID == run.BindingID && existing.BindingGeneration == run.BindingGeneration {
-			switch existing.Status {
-			case store.SyncRunStatusPending, store.SyncRunStatusRunning:
-				return existing, false, nil
+	if existing, ok := s.runs[run.RunID]; ok {
+		return existing, false, nil
+	}
+	if run.TriggerType != TriggerTypeManual && !(run.TriggerType == TriggerTypeWatch && run.ScopeType == string(connector.ScopeTypeWatchEvent)) {
+		for _, existing := range s.runs {
+			if existing.BindingID == run.BindingID && existing.BindingGeneration == run.BindingGeneration {
+				switch existing.Status {
+				case store.SyncRunStatusPending, store.SyncRunStatusRunning:
+					return existing, false, nil
+				}
 			}
 		}
 	}

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Empty, Input, Space, Tag, message } from "antd";
+import { HistoryOutlined } from "@ant-design/icons";
 import { useParams } from "react-router-dom";
 import MarkdownViewer from "@/modules/knowledge/components/MarkdownViewer";
 import { DetailPageHeader } from "@/components/ui";
 import { getLocalizedErrorMessage } from "@/components/request";
+import ResourceVersionDrawer from "../../components/ResourceVersionDrawer";
 import RouteLoading from "../../components/RouteLoading";
 import { useMemoryManagementOutletContext } from "../../context";
 import { getSkillAssetDetail, patchSkillAsset } from "../../skillApi";
@@ -50,6 +52,7 @@ export default function MemorySkillDetailPage() {
   const [isDescriptionEditing, setIsDescriptionEditing] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState("");
   const [descriptionSaving, setDescriptionSaving] = useState(false);
+  const [versionDrawerOpen, setVersionDrawerOpen] = useState(false);
 
   const cachedSkill = useMemo(
     () => skillAssets.find((item: StructuredAsset) => item.id === itemId) || null,
@@ -141,12 +144,12 @@ export default function MemorySkillDetailPage() {
     if (!canEditSkillDetail) {
       return;
     }
-    setInlineContentDraft(skill?.content || "");
+    setInlineContentDraft(previewContent);
     setIsInlineEditing(true);
   };
 
   const handleCancelInlineEdit = () => {
-    setInlineContentDraft(skill?.content || "");
+    setInlineContentDraft(previewContent);
     setIsInlineEditing(false);
   };
 
@@ -163,7 +166,7 @@ export default function MemorySkillDetailPage() {
     }
 
     const trimmedDraft = inlineContentDraft.trim();
-    if (trimmedDraft === (skill.content || "").trim()) {
+    if (trimmedDraft === previewContent.trim()) {
       setIsInlineEditing(false);
       return;
     }
@@ -334,12 +337,133 @@ export default function MemorySkillDetailPage() {
     }
   };
 
+  const skillHeaderContent = skill ? (
+    <div className="memory-skill-detail-header-content">
+      <div className="memory-skill-detail-title">
+        <div className={`memory-skill-detail-title-copy${isTitleEditing ? " is-editing" : ""}`}>
+          {isTitleEditing && canEditSkillDetail ? (
+            <div
+              className="memory-skill-detail-title-editor"
+              onBlur={(event) => {
+                const nextFocusedNode = event.relatedTarget as Node | null;
+                if (event.currentTarget.contains(nextFocusedNode)) {
+                  return;
+                }
+                void handleSaveTitleEdit();
+              }}
+            >
+              <Input
+                autoFocus
+                value={titleDraft}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onPressEnter={() => void handleSaveTitleEdit()}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    handleCancelTitleEdit();
+                  }
+                }}
+                disabled={titleSaving}
+                className="memory-skill-detail-title-input"
+              />
+            </div>
+          ) : (
+            <>
+              {canEditSkillDetail ? (
+                <button
+                  type="button"
+                  className="memory-skill-detail-title-trigger"
+                  onClick={handleStartTitleEdit}
+                >
+                  <h3>{skill.name}</h3>
+                </button>
+              ) : (
+                <h3>{skill.name}</h3>
+              )}
+              {isDescriptionEditing && canEditSkillDetail ? (
+                <div
+                  className="memory-skill-detail-description-editor"
+                  onBlur={(event) => {
+                    const nextFocusedNode = event.relatedTarget as Node | null;
+                    if (event.currentTarget.contains(nextFocusedNode)) {
+                      return;
+                    }
+                    void handleSaveDescriptionEdit();
+                  }}
+                >
+                  <Input.TextArea
+                    autoFocus
+                    value={descriptionDraft}
+                    onChange={(event) => setDescriptionDraft(event.target.value)}
+                    autoSize={{ minRows: 2, maxRows: 5 }}
+                    disabled={descriptionSaving}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        handleCancelDescriptionEdit();
+                      }
+                    }}
+                    className="memory-skill-detail-description-input"
+                  />
+                </div>
+              ) : canEditSkillDetail ? (
+                <button
+                  type="button"
+                  className="memory-skill-detail-description-trigger"
+                  onClick={handleStartDescriptionEdit}
+                >
+                  <p>{skill.description || "-"}</p>
+                </button>
+              ) : (
+                <p>{skill.description || "-"}</p>
+              )}
+            </>
+          )}
+        </div>
+        <div className="memory-skill-detail-meta">
+          {skill.category ? (
+            <Tag className="memory-category-tag" bordered={false}>
+              {skill.category}
+            </Tag>
+          ) : null}
+          {skill.protect ? (
+            <Tag className="memory-protect-tag" bordered={false}>
+              {t("admin.memoryProtect", { defaultValue: "保护" })}
+            </Tag>
+          ) : null}
+        </div>
+      </div>
+
+      {skill.tags.length ? (
+        <div className="memory-skill-detail-tags">
+          <div className="memory-tag-group">
+            {skill.tags.map((item: string) => (
+              <Tag key={item}>{item}</Tag>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  ) : (
+    t("admin.memorySkillShareUnknownSkill")
+  );
+
   return (
     <div className="memory-skill-detail-layout">
       <DetailPageHeader
         className="memory-skill-detail-page-header"
         title={t("admin.memorySkillDetailTitle")}
-        description={skill?.name || t("admin.memorySkillShareUnknownSkill")}
+        description={skillHeaderContent}
+        settingsMenu={
+          skill ? (
+            <Button
+              icon={<HistoryOutlined />}
+              onClick={() => setVersionDrawerOpen(true)}
+            >
+              {t("admin.memoryVersionHistoryButton")}
+            </Button>
+          ) : null
+        }
         onBack={() => navigateToMemoryList("skills")}
       />
 
@@ -363,113 +487,6 @@ export default function MemorySkillDetailPage() {
         />
       ) : skill ? (
         <div className="memory-skill-detail-card">
-          <div className="memory-skill-detail-title">
-            <div
-              className={`memory-skill-detail-title-copy${isTitleEditing ? " is-editing" : ""}`}
-            >
-              {isTitleEditing && canEditSkillDetail ? (
-                <div
-                  className="memory-skill-detail-title-editor"
-                  onBlur={(event) => {
-                    const nextFocusedNode = event.relatedTarget as Node | null;
-                    if (event.currentTarget.contains(nextFocusedNode)) {
-                      return;
-                    }
-                    void handleSaveTitleEdit();
-                  }}
-                >
-                  <Input
-                    autoFocus
-                    value={titleDraft}
-                    onChange={(event) => setTitleDraft(event.target.value)}
-                    onPressEnter={() => void handleSaveTitleEdit()}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        handleCancelTitleEdit();
-                      }
-                    }}
-                    disabled={titleSaving}
-                    className="memory-skill-detail-title-input"
-                  />
-                </div>
-              ) : (
-                <>
-                  {canEditSkillDetail ? (
-                    <button
-                      type="button"
-                      className="memory-skill-detail-title-trigger"
-                      onClick={handleStartTitleEdit}
-                    >
-                      <h3>{skill.name}</h3>
-                    </button>
-                  ) : (
-                    <h3>{skill.name}</h3>
-                  )}
-                  {isDescriptionEditing && canEditSkillDetail ? (
-                    <div
-                      className="memory-skill-detail-description-editor"
-                      onBlur={(event) => {
-                        const nextFocusedNode = event.relatedTarget as Node | null;
-                        if (event.currentTarget.contains(nextFocusedNode)) {
-                          return;
-                        }
-                        void handleSaveDescriptionEdit();
-                      }}
-                    >
-                      <Input.TextArea
-                        autoFocus
-                        value={descriptionDraft}
-                        onChange={(event) => setDescriptionDraft(event.target.value)}
-                        autoSize={{ minRows: 2, maxRows: 5 }}
-                        disabled={descriptionSaving}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") {
-                            event.preventDefault();
-                            handleCancelDescriptionEdit();
-                          }
-                        }}
-                        className="memory-skill-detail-description-input"
-                      />
-                    </div>
-                  ) : canEditSkillDetail ? (
-                    <button
-                      type="button"
-                      className="memory-skill-detail-description-trigger"
-                      onClick={handleStartDescriptionEdit}
-                    >
-                      <p>{skill.description || "-"}</p>
-                    </button>
-                  ) : (
-                    <p>{skill.description || "-"}</p>
-                  )}
-                </>
-              )}
-            </div>
-            <div className="memory-skill-detail-meta">
-              {skill.category ? (
-                <Tag className="memory-category-tag" bordered={false}>
-                  {skill.category}
-                </Tag>
-              ) : null}
-              {skill.protect ? (
-                <Tag className="memory-protect-tag" bordered={false}>
-                  {t("admin.memoryProtect", { defaultValue: "保护" })}
-                </Tag>
-              ) : null}
-            </div>
-          </div>
-
-          {skill.tags.length ? (
-            <div className="memory-skill-detail-tags">
-              <div className="memory-tag-group">
-                {skill.tags.map((item: string) => (
-                  <Tag key={item}>{item}</Tag>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
           <div className="memory-form-field memory-form-field-full">
             <div className="memory-skill-detail-editor-toolbar">
               <label>
@@ -507,13 +524,24 @@ export default function MemorySkillDetailPage() {
                   className="memory-skill-detail-textarea"
                 />
               ) : renderAsMarkdown ? (
-                <MarkdownViewer>{skill.content || ""}</MarkdownViewer>
+                <MarkdownViewer>{previewContent}</MarkdownViewer>
               ) : (
                 <pre>{previewContent || "-"}</pre>
               )}
             </div>
           </div>
         </div>
+      ) : null}
+
+      {skill ? (
+        <ResourceVersionDrawer
+          open={versionDrawerOpen}
+          resourceId={skill.id}
+          resourceName={skill.name}
+          resourceType="skill"
+          t={t}
+          onClose={() => setVersionDrawerOpen(false)}
+        />
       ) : null}
     </div>
   );

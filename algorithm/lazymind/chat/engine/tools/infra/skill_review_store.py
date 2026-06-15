@@ -13,7 +13,6 @@ from lazymind.common.postgres import normalize_postgres_sqlalchemy_url
 from lazymind.config import config as _cfg
 
 SKILL_REVIEW_TABLE = 'skill_review_results'
-SKILL_REVIEW_TYPE_NEW = 'new'
 SKILL_REVIEW_TYPE_PATCH = 'patch'
 _DB_URL_ENV = 'LAZYMIND_DATABASE_URL'
 _CORE_DB_URL_ENV = 'LAZYMIND_CORE_DATABASE_URL'
@@ -23,20 +22,22 @@ _engine_cache: dict[str, Engine] = {}
 _engine_cache_lock = threading.Lock()
 
 
-def find_pending_skill_review(category: str, skill_name: str) -> Optional[dict[str, Any]]:
+def find_pending_skill_review(category: str, skill_name: str, user_id: str) -> Optional[dict[str, Any]]:
     with _get_app_conn().connect() as conn:
         row = conn.execute(
             text(
                 f"""SELECT id, category, skill_name, "type", review_status, userid,
                           requestid, summary, "time"
                        FROM {SKILL_REVIEW_TABLE}
-                      WHERE category = :category
+                      WHERE userid = :userid
+                        AND category = :category
                         AND skill_name = :skill_name
                         AND review_status = :review_status
                       ORDER BY "time" DESC, id DESC
                       LIMIT 1"""
             ),
             {
+                'userid': user_id,
                 'category': category,
                 'skill_name': skill_name,
                 'review_status': 'pending',
@@ -52,10 +53,11 @@ def insert_skill_review_result(
     review_type: str,
     skill_content: str,
     user_id: str = '',
+    requestid: str = '',
     summary: Optional[str] = None,
 ) -> dict[str, Any]:
     record_id = str(uuid4())
-    requestid = uuid4().hex
+    requestid = requestid or uuid4().hex
     with _get_app_conn().begin() as conn:
         row = conn.execute(
             text(
@@ -92,55 +94,6 @@ def insert_skill_review_result(
             },
         ).mappings().one()
     return _jsonable_row(dict(row))
-
-
-def mark_skill_review_delete(
-    *,
-    category: str,
-    skill_name: str,
-    user_id: str = '',
-    summary: Optional[str] = None,
-) -> Optional[dict[str, Any]]:
-    requestid = uuid4().hex
-    with _get_app_conn().begin() as conn:
-        target = conn.execute(
-            text(
-                f"""SELECT id
-                       FROM {SKILL_REVIEW_TABLE}
-                      WHERE category = :category
-                        AND skill_name = :skill_name
-                      ORDER BY "time" DESC, id DESC
-                      LIMIT 1"""
-            ),
-            {'category': category, 'skill_name': skill_name},
-        ).mappings().first()
-        if not target:
-            return None
-
-        row = conn.execute(
-            text(
-                f"""UPDATE {SKILL_REVIEW_TABLE}
-                       SET "type" = :type,
-                           review_status = :review_status,
-                           userid = COALESCE(NULLIF(:userid, ''), userid),
-                           requestid = :requestid,
-                           summary = :summary,
-                           "time" = CURRENT_TIMESTAMP
-                     WHERE id = :id
-                 RETURNING id, category, skill_name, "type", review_status,
-                           userid, requestid, summary, "time" """
-            ),
-            {
-                'id': target['id'],
-                'type': 'delete',
-                'review_status': 'pending',
-                'userid': user_id,
-                'requestid': requestid,
-                'summary': summary,
-            },
-        ).mappings().one()
-    return _jsonable_row(dict(row))
-
 
 def _get_app_conn() -> Engine:
     core_db_url = _get_core_db_url()

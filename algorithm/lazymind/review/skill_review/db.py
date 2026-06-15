@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from lazymind.chat.service.component.history import normalize_history_for_agent
+from lazymind.chat.engine.tools.infra.skill_validation import parse_skill_frontmatter
 from lazymind.common.postgres import normalize_postgres_sqlalchemy_url
 from lazymind.review.skill_review.schemas import SkillReviewResolution, SkillReviewRunStat
 from lazymind.config import config as _cfg
@@ -32,23 +33,37 @@ def read_session(
     end_time: datetime,
     user_ids: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
-    """Read chat history rows in [start_time, end_time] by chat_histories.update_time."""
     normalized_user_ids = [str(item).strip() for item in (user_ids or []) if str(item).strip()]
-    where = 'ch.update_time >= :start_time AND ch.update_time <= :end_time'
-    params: dict[str, Any] = {'start_time': start_time, 'end_time': end_time}
+
+    params: dict[str, Any] = {
+        'start_time': start_time,
+        'end_time': end_time,
+    }
+
+    user_filter = ''
     if normalized_user_ids:
-        where += ' AND c.create_user_id = ANY(:user_ids)'
+        user_filter = 'AND c.create_user_id = ANY(:user_ids)'
         params['user_ids'] = normalized_user_ids
 
     query = text(
-        'SELECT ch.*, c.create_user_id'
-        ' FROM chat_histories ch'
-        ' LEFT JOIN conversations c ON ch.conversation_id = c.id'
-        f' WHERE {where}'
-        ' ORDER BY ch.update_time ASC'
+        f"""
+        WITH updated_sessions AS (
+            SELECT c.id AS conversation_id, c.create_user_id
+            FROM conversations c
+            WHERE c.updated_at >= :start_time
+              AND c.updated_at < :end_time
+              {user_filter}
+        )
+        SELECT ch.*, us.create_user_id
+        FROM chat_histories ch
+        JOIN updated_sessions us ON ch.conversation_id = us.conversation_id
+        ORDER BY ch.conversation_id ASC, ch.create_time ASC
+        """
     )
+
     with _get_app_conn().connect() as conn:
         rows = conn.execute(query, params).mappings().all()
+
     return _convert_history([_jsonable_value(dict(row)) for row in rows])
 
 
@@ -63,6 +78,7 @@ def insert_skill_review_records(
         {
             'id': item.id,
             'skill_name': item.skill_name,
+            'category': _parse_skill_category(item.skill_content),
             'type': item.type,
             'review_status': item.review_status,
             'userid': item.userid,
@@ -77,14 +93,15 @@ def insert_skill_review_records(
         conn.execute(
             text(
                 f"""INSERT INTO {SKILL_REVIEW_TABLE}
-                       (id, skill_name, "type", review_status, userid, requestid,
+                       (id, skill_name, category, "type", review_status, userid, requestid,
                         skill_content, summary, "time")
                     VALUES
-                       (:id, :skill_name, :type, :review_status, :userid, :requestid,
+                       (:id, :skill_name, :category, :type, :review_status, :userid, :requestid,
                         :skill_content, :summary,
                         COALESCE(CAST(NULLIF(:time, '') AS TIMESTAMPTZ), CURRENT_TIMESTAMP))
                     ON CONFLICT (id) DO UPDATE SET
                        skill_name = EXCLUDED.skill_name,
+                       category = EXCLUDED.category,
                        "type" = EXCLUDED."type",
                        userid = EXCLUDED.userid,
                        requestid = EXCLUDED.requestid,
@@ -272,6 +289,11 @@ def _normalize_raw_message(raw: Any) -> dict[str, Any] | None:
         return {'role': role, 'content': content}
 
     return None
+
+
+def _parse_skill_category(skill_content: str) -> str:
+    frontmatter, _ = parse_skill_frontmatter(skill_content)
+    return str(frontmatter.get('category') or '').strip()
 
 
 def _normalize_records(

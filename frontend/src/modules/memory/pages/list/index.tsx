@@ -4,26 +4,33 @@ import {
   Empty,
   Input,
   Select,
+  Segmented,
   Space,
   Switch,
   Table,
   Tooltip,
 } from "antd";
-import { QuestionCircleOutlined } from "@ant-design/icons";
+import {
+  PlusOutlined,
+  QuestionCircleOutlined,
+} from "@ant-design/icons";
 import { getLocalizedTablePagination } from "@/components/ui/pagination";
 import { useMemoryManagementOutletContext } from "../../context";
 import type { ExperienceAsset, StructuredAsset } from "../../shared";
+import type { McpServerAsset } from "../../toolApi";
 import GlossaryListSection from "../../components/GlossaryListSection";
 
 const defaultMemoryListPageSize = 6;
 const memoryListPageSizeOptions = [6, 12, 20, 50];
 const showGlossaryInboxUi = true;
+type ToolView = "builtin" | "mcp";
 
 export default function MemoryManagementListPage() {
   const listContentRef = useRef<HTMLDivElement>(null);
   const [memoryTableBodyHeight, setMemoryTableBodyHeight] = useState<number>();
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(defaultMemoryListPageSize);
+  const [toolView, setToolView] = useState<ToolView>("builtin");
   const {
     t,
     activeTab,
@@ -68,6 +75,7 @@ export default function MemoryManagementListPage() {
     filteredExperienceItems,
     experienceLoading,
     experienceColumns,
+    experienceProfileExpandable,
     filteredGlossaryItems,
     glossaryColumns,
     selectedGlossaryAssetIds,
@@ -83,8 +91,13 @@ export default function MemoryManagementListPage() {
     skillAssets,
     filteredSkillTree,
     filteredStructuredItems,
+    filteredMcpServers,
     genericColumns,
     toolColumns,
+    toolLoading,
+    mcpColumns,
+    mcpLoading,
+    openMcpCreateModal,
   } = useMemoryManagementOutletContext();
 
   const activeListTotal = useMemo(() => {
@@ -95,14 +108,18 @@ export default function MemoryManagementListPage() {
       return skillListTotal;
     }
     if (activeTab === "tools") {
-      return filteredStructuredItems.length;
+      return toolView === "mcp"
+        ? filteredMcpServers.length
+        : filteredStructuredItems.length;
     }
     return 0;
   }, [
     activeTab,
     filteredExperienceItems.length,
+    filteredMcpServers.length,
     skillListTotal,
     filteredStructuredItems.length,
+    toolView,
   ]);
 
   useEffect(() => {
@@ -111,7 +128,7 @@ export default function MemoryManagementListPage() {
       return;
     }
     setCurrentPage(1);
-  }, [activeTab, category, query, setSkillListPage, tag]);
+  }, [activeTab, category, query, setSkillListPage, tag, toolView]);
 
   const activePage = activeTab === "skills" ? skillListPage : currentPage;
   const activePageSize = activeTab === "skills" ? skillListPageSize : pageSize;
@@ -157,9 +174,10 @@ export default function MemoryManagementListPage() {
     },
     t,
   );
+  const tableScrollWidth = activeTab === "tools" && toolView === "mcp" ? 1460 : 980;
   const memoryTableScroll = memoryTableBodyHeight
-    ? { x: 980, y: memoryTableBodyHeight }
-    : { x: 980 };
+    ? { x: tableScrollWidth, y: memoryTableBodyHeight }
+    : { x: tableScrollWidth };
 
   useEffect(() => {
     if (activeTab === "glossary") {
@@ -245,6 +263,16 @@ export default function MemoryManagementListPage() {
                 : t("admin.memoryCreateButton", { unit: currentTabMeta.unit })}
             </Button>
           ) : null}
+          {activeTab === "tools" && toolView === "mcp" ? (
+            <Button
+              type="primary"
+              className="admin-page-primary-button"
+              icon={<PlusOutlined />}
+              onClick={openMcpCreateModal}
+            >
+              {t("admin.memoryMcpCreateButton")}
+            </Button>
+          ) : null}
         </Space>
       </div>
 
@@ -275,6 +303,39 @@ export default function MemoryManagementListPage() {
           );
         })}
       </div>
+
+      {activeTab === "tools" ? (
+        <div className="memory-tool-mode-bar">
+          <Segmented<ToolView>
+            options={[
+              {
+                label: t("admin.memoryBuiltinTools"),
+                value: "builtin",
+              },
+              {
+                label: "MCP",
+                value: "mcp",
+              },
+            ]}
+            value={toolView}
+            onChange={(value) => {
+              setToolView(value);
+              setCurrentPage(1);
+            }}
+          />
+          <div className="memory-tool-mode-meta">
+            <span>
+              {toolView === "mcp"
+                ? t("admin.memoryMcpServerCount", {
+                    count: filteredMcpServers.length,
+                  })
+                : t("admin.memoryBuiltinToolCount", {
+                    count: filteredStructuredItems.length,
+                  })}
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       {activeTab === "experience" ? (
         <div className="memory-experience-feature-bar">
@@ -316,7 +377,7 @@ export default function MemoryManagementListPage() {
             placeholder={t("admin.memorySearchPlaceholder")}
             className="memory-filter-search"
           />
-          {activeTab === "tools" || activeTab === "skills" ? (
+          {activeTab === "skills" ? (
             <>
               <Select
                 allowClear
@@ -329,19 +390,17 @@ export default function MemoryManagementListPage() {
                 className="memory-filter-select"
                 onChange={(value) => setCategory(value)}
               />
-              {activeTab === "skills" ? (
-                <Select
-                  allowClear
-                  value={tag}
-                  placeholder={t("admin.memoryAllTags")}
-                  options={availableTags.map((item: string) => ({
-                    label: item,
-                    value: item,
-                  }))}
-                  className="memory-filter-select"
-                  onChange={(value) => setTag(value)}
-                />
-              ) : null}
+              <Select
+                allowClear
+                value={tag}
+                placeholder={t("admin.memoryAllTags")}
+                options={availableTags.map((item: string) => ({
+                  label: item,
+                  value: item,
+                }))}
+                className="memory-filter-select"
+                onChange={(value) => setTag(value)}
+              />
             </>
           ) : activeTab === "glossary" ? (
             <Select
@@ -365,6 +424,7 @@ export default function MemoryManagementListPage() {
             loading={experienceLoading}
             dataSource={filteredExperienceItems}
             columns={experienceColumns}
+            expandable={experienceProfileExpandable}
             tableLayout="fixed"
             pagination={memoryListPagination}
             locale={{
@@ -399,11 +459,36 @@ export default function MemoryManagementListPage() {
             setGlossaryListPageSize={setGlossaryListPageSize}
             setSelectedGlossaryAssetIds={setSelectedGlossaryAssetIds}
           />
+        ) : activeTab === "tools" && toolView === "mcp" ? (
+          <Table<McpServerAsset>
+            className="admin-page-table memory-table"
+            rowKey="id"
+            loading={mcpLoading}
+            dataSource={filteredMcpServers}
+            columns={mcpColumns}
+            tableLayout="fixed"
+            pagination={memoryListPagination}
+            locale={{
+              emptyText: (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={t("admin.memoryMcpEmpty")}
+                />
+              ),
+            }}
+            scroll={memoryTableScroll}
+          />
         ) : (
           <Table<StructuredAsset>
             className="admin-page-table memory-table"
             rowKey="id"
-            loading={activeTab === "skills" ? skillLoading : false}
+            loading={
+              activeTab === "skills"
+                ? skillLoading
+                : activeTab === "tools"
+                  ? toolLoading
+                  : false
+            }
             dataSource={activeTab === "skills" ? filteredSkillTree : filteredStructuredItems}
             columns={activeTab === "tools" ? toolColumns : genericColumns}
             rowClassName={(record) =>

@@ -1,36 +1,35 @@
 from typing import Any, Dict, List, Literal, Optional
 
 import lazyllm
-from typing_extensions import TypedDict
 
 from lazymind.chat.engine.tools.infra import (
     build_skill_identity,
+    create_remote_skill,
     handle_tool_errors,
     is_writable_skill_source,
     list_all_skill_entries,
     normalize_skill_category,
+    parse_skill_frontmatter,
+    remove_remote_skill,
     tool_error,
     tool_success,
     validate_skill_content,
     validate_skill_name,
 )
+from lazymind.chat.engine.tools.infra.skill_operations import (
+    SkillEditOperation,
+    apply_skill_edit_operations,
+)
 from lazymind.chat.engine.tools.infra.skill_review_store import (
-    SKILL_REVIEW_TYPE_NEW,
     SKILL_REVIEW_TYPE_PATCH,
     find_pending_skill_review,
     insert_skill_review_result,
-    mark_skill_review_delete,
 )
 from lazymind.config import config as _cfg
 
 
-class SkillEditOperation(TypedDict, total=False):
-    """JSON edit operation applied to current SKILL.md content."""
-
-    op: str
-    old: str
-    new: str
-    content: str
+_PENDING_CHANGE_MESSAGE = '存在未处理的变更，请先处理'
+_SUCCESS_MESSAGE = '已写入变更，等待确认'
 
 
 @handle_tool_errors
@@ -80,9 +79,10 @@ def skill_editor(
 
     agentic_config = lazyllm.globals['agentic_config']
     user_id = str(agentic_config.get('user_id') or '').strip()
+    session_id = str(agentic_config.get('session_id') or '').strip()
 
     normalized_category = normalize_skill_category(category)
-    if normalized_category is None:
+    if not normalized_category:
         return tool_error(
             'skill_editor',
             f'Category {category!r} is invalid; it must be a single '
@@ -110,38 +110,18 @@ def skill_editor(
             )
         if operations:
             return tool_error('skill_editor', "action='create' must not include 'operations'.")
-        if existing_skill:
-            source = existing_skill.get('source', 'file')
-            if not is_writable_skill_source(source):
-                return tool_error(
-                    'skill_editor',
-                    f'Skill {name!r} already exists in category {normalized_category!r} '
-                    f'with read-only source {source!r}; skill_editor can only write remote skills.'
-                )
+        content_category, content_name = _skill_identity_from_content(content or '')
+        if content_category != normalized_category or content_name != name:
             return tool_error(
                 'skill_editor',
-                f'Skill {name!r} already exists in category {normalized_category!r}; '
-                "use action='modify' to edit it or action='remove' to delete it first."
+                'SKILL.md frontmatter name/category must match the tool name/category for create.'
             )
+        pending = find_pending_skill_review(content_category, content_name, user_id)
+        if pending or existing_skill:
+            return tool_error('skill_editor', _PENDING_CHANGE_MESSAGE)
 
-        record = insert_skill_review_result(
-            category=normalized_category,
-            skill_name=name,
-            review_type=SKILL_REVIEW_TYPE_NEW,
-            skill_content=content or '',
-            user_id=user_id,
-        )
-        return tool_success('skill_editor', {
-            'name': name,
-            'action': action,
-            'category': normalized_category,
-            'status': 'success',
-            'persisted': 'skill_review_results',
-            'record_id': record.get('id'),
-            'requestid': record.get('requestid'),
-            'review_status': record.get('review_status', 'pending'),
-            'type': record.get('type', SKILL_REVIEW_TYPE_NEW),
-        })
+        create_remote_skill(content_category, content_name, content or '')
+        return tool_success('skill_editor', _SUCCESS_MESSAGE)
 
     if action == 'modify':
         if content is not None:
@@ -167,52 +147,34 @@ def skill_editor(
                 f'{source!r}; skill_editor can only modify remote skills.'
             )
 
-        pending = find_pending_skill_review(normalized_category, name)
-        if pending:
-            return _pending_review_error(name, normalized_category, pending)
-
         try:
             from lazymind.rewrite.base import UnprocessableContentError
-            from lazymind.rewrite.skill import _apply_skill_edit_operations
 
-            current_content = existing_skill.get('content') or ''
-            operation_payload = [dict(op) for op in operations]
-            edited_content = _apply_skill_edit_operations(
-                current_content,
-                {'operations': operation_payload},
+            edited_content, operation_payload = apply_skill_edit_operations(
+                existing_skill.get('content') or '',
+                operations,
             )
-            if edited_content.strip() == current_content.strip():
-                raise UnprocessableContentError(
-                    'Edited SKILL.md content is unchanged from current content. '
-                    'A review row must contain at least one real content change.'
-                )
         except UnprocessableContentError as exc:
             return tool_error('skill_editor', str(exc))
 
         content_error = validate_skill_content(edited_content)
         if content_error:
             return tool_error('skill_editor', content_error)
+        edited_category, edited_name = _skill_identity_from_content(edited_content)
+        pending = find_pending_skill_review(edited_category, edited_name, user_id)
+        if pending:
+            return tool_error('skill_editor', _PENDING_CHANGE_MESSAGE)
 
-        record = insert_skill_review_result(
+        insert_skill_review_result(
             category=normalized_category,
             skill_name=name,
             review_type=SKILL_REVIEW_TYPE_PATCH,
             skill_content=edited_content,
             user_id=user_id,
+            requestid=session_id,
             summary=f'skill_editor operations: {len(operation_payload)}',
         )
-        return tool_success('skill_editor', {
-            'name': name,
-            'action': action,
-            'category': normalized_category,
-            'status': 'success',
-            'operation_count': len(operation_payload),
-            'persisted': 'skill_review_results',
-            'record_id': record.get('id'),
-            'requestid': record.get('requestid'),
-            'review_status': record.get('review_status', 'pending'),
-            'type': record.get('type', SKILL_REVIEW_TYPE_PATCH),
-        })
+        return tool_success('skill_editor', _SUCCESS_MESSAGE)
 
     if action == 'remove':
         if content is not None or operations:
@@ -231,33 +193,12 @@ def skill_editor(
                 f'{source!r}; skill_editor can only remove remote skills.'
             )
 
-        pending = find_pending_skill_review(normalized_category, name)
+        pending = find_pending_skill_review(normalized_category, name, user_id)
         if pending:
-            return _pending_review_error(name, normalized_category, pending)
+            return tool_error('skill_editor', _PENDING_CHANGE_MESSAGE)
 
-        record = mark_skill_review_delete(
-            category=normalized_category,
-            skill_name=name,
-            user_id=user_id,
-            summary=(reason or '').strip() or None,
-        )
-        if not record:
-            return tool_error(
-                'skill_editor',
-                f'Skill {name!r} in category {normalized_category!r} has no skill_review_results row to mark delete.'
-            )
-        return tool_success('skill_editor', {
-            'name': name,
-            'action': action,
-            'category': normalized_category,
-            'reason': reason,
-            'status': 'success',
-            'persisted': 'skill_review_results',
-            'record_id': record.get('id'),
-            'requestid': record.get('requestid'),
-            'review_status': record.get('review_status', 'pending'),
-            'type': record.get('type'),
-        })
+        remove_remote_skill(normalized_category, name)
+        return tool_success('skill_editor', _SUCCESS_MESSAGE)
 
     return tool_error(
         'skill_editor',
@@ -265,14 +206,8 @@ def skill_editor(
     )
 
 
-def _pending_review_error(
-    name: str,
-    category: str,
-    pending: Dict[str, Any],
-) -> Dict[str, Any]:
-    return tool_error(
-        'skill_editor',
-        f'Skill {name!r} in category {category!r} is pending in skill_review_results; '
-        'please process the pending skill review before submitting another change.',
-        meta={'pending_record_id': pending.get('id')},
-    )
+def _skill_identity_from_content(content: str) -> tuple[str, str]:
+    frontmatter, _ = parse_skill_frontmatter(content)
+    category = str(frontmatter.get('category') or '').strip()
+    name = str(frontmatter.get('name') or '').strip()
+    return category, name

@@ -204,36 +204,21 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 		common.ReplyErr(w, fmt.Sprintf("%s: %v", "build chat resource context failed", err), http.StatusInternalServerError)
 		return
 	}
-	reqBody := buildChatRequestBody(convID, sessionID, query, upstreamHistories, raw, resourceContext, userID)
-	historyExt := buildChatHistoryExt(raw, query)
-	llmConfig, err := modelconfig.LoadLLMConfig(r.Context(), db, userID)
+	dbDisabledTools, err := listDisabledToolNames(r.Context(), db, userID)
 	if err != nil {
-		common.ReplyErr(w, fmt.Sprintf("%s: %v", "load llm config failed", err), http.StatusInternalServerError)
+		common.ReplyErr(w, "query disabled tools failed", http.StatusInternalServerError)
 		return
 	}
-	if len(llmConfig) > 0 {
-		reqBody["llm_config"] = llmConfig
+	if len(dbDisabledTools) > 0 {
+		resourceContext.DisabledTools = mergeDisabledToolNames(resourceContext.DisabledTools, dbDisabledTools)
 	}
-	var toolConfig map[string]any
-	if feishuTokens, err := fetchFeishuTokens(r.Context(), userID); err != nil {
-		fmt.Printf("[Core] [FEISHU_TOKEN] failed to fetch feishu tokens for user %s: %v\n", userID, err)
-	} else if len(feishuTokens) > 0 {
-		var feishuValue any
-		if len(feishuTokens) == 1 {
-			feishuValue = feishuTokens[0]
-		} else {
-			feishuValue = feishuTokens
-		}
-		toolConfig = mergeToolConfig(toolConfig, map[string]any{"feishu": feishuValue})
+	reqBody := buildChatRequestBody(convID, sessionID, query, upstreamHistories, raw, resourceContext, userID)
+	historyExt := buildChatHistoryExt(raw, query)
+	if err := applyChatRuntimeConfigs(r.Context(), db, userID, reqBody); err != nil {
+		common.ReplyErr(w, fmt.Sprintf("%s: %v", "load chat runtime config failed", err), http.StatusInternalServerError)
+		return
 	}
-	if searchConfig, err := searchToolConfigEntry(r.Context(), db, userID); err != nil {
-		fmt.Printf("[Core] [SEARCH_TOOL_CONFIG] failed to load search tool config for user %s: %v\n", userID, err)
-	} else if len(searchConfig) > 0 {
-		toolConfig = mergeToolConfig(toolConfig, searchConfig)
-	}
-	if len(toolConfig) > 0 {
-		reqBody["tool_config"] = toolConfig
-	}
+	applyMCPRuntimeConfig(r.Context(), db, userID, reqBody)
 	baseURL := chatServiceURL()
 	reqCtx := r.Context()
 	rdb := store.Redis()
@@ -1111,6 +1096,7 @@ func SetChatHistory(w http.ResponseWriter, r *http.Request) {
 			RetrievalResult: selected.RetrievalResult,
 			Content:         selected.Content,
 			Result:          selected.Result,
+			ToolCallTurns:   nonNegativeToolCallTurns(int64(selected.ToolCallTurns)),
 			FeedBack:        selected.FeedBack,
 			Reason:          selected.Reason,
 			Ext:             selected.Ext,
@@ -1121,6 +1107,7 @@ func SetChatHistory(w http.ResponseWriter, r *http.Request) {
 			common.ReplyErr(w, fmt.Sprintf("%s: %v", "set history failed", err), http.StatusInternalServerError)
 			return
 		}
+		recordConversationIdleAfterPersist(context.Background(), db, store.Redis(), selected.ConversationID, userID, selected.ID, now, selected.RawContent, stripToolTags(selected.Result))
 	}
 
 	_ = db.Where("id IN ?", []string{body.SetHistoryID, body.DeletedHistoryID}).Delete(&orm.MultiAnswersChatHistory{}).Error
