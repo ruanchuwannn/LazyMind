@@ -1,8 +1,9 @@
+import importlib
 import sys
 from types import ModuleType
 
-import lazymind.chat.engine.tools.memory_editor as memory_mod
-import lazymind.chat.engine.tools.skill_editor as skill_editor_mod
+memory_mod = importlib.import_module('lazymind.chat.engine.tools.memory_editor')
+skill_editor_mod = importlib.import_module('lazymind.chat.engine.tools.skill_editor')
 
 
 def test_memory_editor_operations_write_memory_review(monkeypatch):
@@ -90,36 +91,38 @@ def test_memory_editor_operations_write_memory_review(monkeypatch):
     ]
 
 
-def test_skill_editor_create_modify_remove_write_skill_review_results(monkeypatch):
+def test_skill_editor_create_modify_remove_core_paths(monkeypatch):
     records = []
-    delete_calls = []
+    create_calls = []
+    remove_calls = []
+    pending_checks = []
 
     def fake_insert_skill_review_result(**kwargs):
         records.append(kwargs)
-        return {
-            'id': f'review-{len(records)}',
-            'review_status': 'pending',
-            'type': kwargs['review_type'],
-        }
-
-    def fake_mark_skill_review_delete(**kwargs):
-        delete_calls.append(kwargs)
-        return {'id': 'review-delete', 'review_status': 'pending', 'type': 'delete'}
+        return {'id': f'review-{len(records)}', 'review_status': 'pending'}
 
     def fake_apply_skill_edit_operations(current, operations):
         return (
-            current.replace('Use this skill for tests.', 'Use this skill for focused tests.'),
+            current
+            .replace('name: existing', 'name: renamed')
+            .replace('category: writing', 'category: drafts')
+            .replace('Use this skill for tests.', 'Use this skill for focused tests.'),
             [dict(op) for op in operations],
         )
 
     monkeypatch.setattr(
         skill_editor_mod.lazyllm,
         'globals',
-        {'agentic_config': {'user_id': 'user-1'}},
+        {'agentic_config': {'user_id': 'user-1', 'session_id': 'session-1'}},
     )
     monkeypatch.setattr(skill_editor_mod, 'insert_skill_review_result', fake_insert_skill_review_result)
-    monkeypatch.setattr(skill_editor_mod, 'mark_skill_review_delete', fake_mark_skill_review_delete)
-    monkeypatch.setattr(skill_editor_mod, 'find_pending_skill_review', lambda category, name: None)
+    monkeypatch.setattr(skill_editor_mod, 'create_remote_skill', lambda *args: create_calls.append(args))
+    monkeypatch.setattr(skill_editor_mod, 'remove_remote_skill', lambda *args: remove_calls.append(args))
+    def fake_find_pending_skill_review(category, name, user_id):
+        pending_checks.append((category, name, user_id))
+        return None
+
+    monkeypatch.setattr(skill_editor_mod, 'find_pending_skill_review', fake_find_pending_skill_review)
     monkeypatch.setattr(skill_editor_mod, 'apply_skill_edit_operations', fake_apply_skill_edit_operations)
 
     existing_content = (
@@ -178,36 +181,31 @@ def test_skill_editor_create_modify_remove_write_skill_review_results(monkeypatc
     assert modify_result['tool'] == 'skill_editor'
     assert remove_result['success'] is True
     assert remove_result['tool'] == 'skill_editor'
-    assert create_result['result']['persisted'] == 'skill_review_results'
-    assert modify_result['result']['persisted'] == 'skill_review_results'
-    assert remove_result['result']['type'] == 'delete'
+    assert create_result['result'] == '已写入变更，等待确认'
+    assert modify_result['result'] == '已写入变更，等待确认'
+    assert remove_result['result'] == '已写入变更，等待确认'
+    assert create_calls == [('drafts', 'new_skill', content)]
+    assert remove_calls == [('writing', 'existing')]
+    assert pending_checks == [
+        ('drafts', 'new_skill', 'user-1'),
+        ('drafts', 'renamed', 'user-1'),
+        ('writing', 'existing', 'user-1'),
+    ]
     assert records == [
-        {
-            'category': 'drafts',
-            'skill_name': 'new_skill',
-            'review_type': 'new',
-            'skill_content': content,
-            'user_id': 'user-1',
-        },
         {
             'category': 'writing',
             'skill_name': 'existing',
             'review_type': 'patch',
-            'skill_content': existing_content.replace(
-                'Use this skill for tests.',
-                'Use this skill for focused tests.',
+            'skill_content': (
+                existing_content
+                .replace('name: existing', 'name: renamed')
+                .replace('category: writing', 'category: drafts')
+                .replace('Use this skill for tests.', 'Use this skill for focused tests.')
             ),
             'user_id': 'user-1',
+            'requestid': 'session-1',
             'summary': 'skill_editor operations: 1',
         },
-    ]
-    assert delete_calls == [
-        {
-            'category': 'writing',
-            'skill_name': 'existing',
-            'user_id': 'user-1',
-            'summary': None,
-        }
     ]
 
 
@@ -236,7 +234,7 @@ def test_skill_editor_rejects_missing_skill_without_write(monkeypatch):
 
 
 def test_skill_editor_blocks_modify_and_remove_when_pending_review_exists(monkeypatch):
-    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {}})
+    monkeypatch.setattr(skill_editor_mod.lazyllm, 'globals', {'agentic_config': {'user_id': 'user-1'}})
     monkeypatch.setattr(
         skill_editor_mod,
         'list_all_skill_entries',
@@ -260,7 +258,15 @@ def test_skill_editor_blocks_modify_and_remove_when_pending_review_exists(monkey
     monkeypatch.setattr(
         skill_editor_mod,
         'find_pending_skill_review',
-        lambda category, name: {'id': 'pending-1', 'category': category, 'skill_name': name},
+        lambda category, name, user_id: {'id': 'pending-1', 'category': category, 'skill_name': name},
+    )
+    monkeypatch.setattr(
+        skill_editor_mod,
+        'apply_skill_edit_operations',
+        lambda current, operations: (
+            current.replace('Use this skill for tests.', 'Use this skill for focused tests.'),
+            [dict(op) for op in operations],
+        ),
     )
 
     modify_result = skill_editor_mod.skill_editor(
@@ -273,9 +279,7 @@ def test_skill_editor_blocks_modify_and_remove_when_pending_review_exists(monkey
 
     assert modify_result['success'] is False
     assert modify_result['tool'] == 'skill_editor'
-    assert 'pending in skill_review_results' in modify_result['error']['reason']
-    assert modify_result['meta'] == {'pending_record_id': 'pending-1'}
+    assert modify_result['error']['reason'] == '存在未处理的变更，请先处理'
     assert remove_result['success'] is False
     assert remove_result['tool'] == 'skill_editor'
-    assert 'pending in skill_review_results' in remove_result['error']['reason']
-    assert remove_result['meta'] == {'pending_record_id': 'pending-1'}
+    assert remove_result['error']['reason'] == '存在未处理的变更，请先处理'

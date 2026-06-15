@@ -258,6 +258,8 @@ func registerAllRoutes(r *mux.Router) {
 	handleAPI(r, "GET", "/remote-fs/info", []string{}, skill.RemoteFSInfo)
 	handleAPI(r, "GET", "/remote-fs/exists", []string{}, skill.RemoteFSExists)
 	handleAPI(r, "GET", "/remote-fs/content", []string{}, skill.RemoteFSContent)
+	handleAPI(r, "PUT", "/remote-fs/content", []string{}, skill.RemoteFSWrite)
+	handleAPI(r, "DELETE", "/remote-fs/path", []string{}, skill.RemoteFSDelete)
 	handleAPI(r, "POST", "/memory/suggestion", []string{}, memory.Suggestion)
 	handleAPI(r, "POST", "/user_preference/suggestion", []string{}, preference.Suggestion)
 

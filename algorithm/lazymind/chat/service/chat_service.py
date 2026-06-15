@@ -96,7 +96,6 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
     filters = dict(filters or {})
     resolved_files = validate_and_resolve_files(files)
     filters['kb_id'] = _normalize_kb_id_filter(filters.get('kb_id'))
-    resolved_use_memory = use_memory is not False
 
     raw_history = list(history) if isinstance(history, list) else []
     agent_history = normalize_history_for_agent(raw_history)
@@ -108,7 +107,7 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
         'files': resolved_files,
         'priority': priority,
         'user_id': user_id or '',
-        'use_memory': resolved_use_memory,
+        'use_memory': use_memory,
         'citation_state': translator.citation_state,
     }
     lazyllm.globals._init_sid(sid=session_id)
@@ -128,7 +127,7 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
     runtime_prompt = build_system_prompt(
         {cfg.name for cfg in active_configs},
         environment_context=environment_context,
-        use_memory=resolved_use_memory,
+        use_memory=use_memory,
         user_preference=user_preference,
         memory=memory,
         files=resolved_files,
