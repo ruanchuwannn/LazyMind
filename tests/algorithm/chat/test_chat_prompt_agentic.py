@@ -2,11 +2,12 @@ from lazymind.chat.engine.prompts import (
     ATTACHED_FILES_GUIDANCE,
     DEFAULT_SYSTEM_PROMPT,
     IMAGE_REFERENCE_MARKDOWN_GUIDANCE,
+    KB_SEARCH_GUIDANCE,
     MEMORY_GUIDANCE,
-    SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     TOOL_CALL_STATUS_GUIDANCE,
     VOCAB_GUIDANCE,
+    WEB_SEARCH_GUIDANCE,
     VISION_EXTRACTOR_GUIDANCE,
     build_system_prompt,
 )
@@ -29,7 +30,8 @@ def test_agentic_guidance_strings_are_non_empty_and_balanced():
         MEMORY_GUIDANCE,
         VOCAB_GUIDANCE,
         SKILLS_GUIDANCE,
-        SEARCH_GUIDANCE,
+        KB_SEARCH_GUIDANCE,
+        WEB_SEARCH_GUIDANCE,
         TOOL_CALL_STATUS_GUIDANCE,
         ATTACHED_FILES_GUIDANCE,
         IMAGE_REFERENCE_MARKDOWN_GUIDANCE,
@@ -42,7 +44,8 @@ def test_agentic_guidance_strings_are_non_empty_and_balanced():
         assert_balanced_curly_braces(prompt)
 
     assert 'LAZYMIND' in DEFAULT_SYSTEM_PROMPT
-    assert 'kb_search' in SEARCH_GUIDANCE
+    assert 'KBToolGroup' in KB_SEARCH_GUIDANCE
+    assert 'ArxivSearch' in WEB_SEARCH_GUIDANCE
     assert 'memory_editor' in MEMORY_GUIDANCE
     assert 'skill_editor' in SKILLS_GUIDANCE
     assert 'vocab_learn' in VOCAB_GUIDANCE
@@ -63,8 +66,18 @@ def test_runtime_guidance_is_selected_by_required_tool_groups():
     assert IMAGE_REFERENCE_MARKDOWN_GUIDANCE not in file_prompt
 
     url_prompt = build_system_prompt({'url_fetch'})
-    assert IMAGE_REFERENCE_MARKDOWN_GUIDANCE in url_prompt
-    assert SEARCH_GUIDANCE not in url_prompt
+    assert IMAGE_REFERENCE_MARKDOWN_GUIDANCE not in url_prompt
+    assert KB_SEARCH_GUIDANCE not in url_prompt
+    assert WEB_SEARCH_GUIDANCE not in url_prompt
+
+    kb_prompt = build_system_prompt({'kb'})
+    assert KB_SEARCH_GUIDANCE in kb_prompt
+
+    web_prompt = build_system_prompt({'web_search'})
+    assert WEB_SEARCH_GUIDANCE in web_prompt
+
+    academic_prompt = build_system_prompt({'academic_search'})
+    assert WEB_SEARCH_GUIDANCE in academic_prompt
 
     multimodal_prompt = build_system_prompt({'multimodal'})
     assert VISION_EXTRACTOR_GUIDANCE in multimodal_prompt

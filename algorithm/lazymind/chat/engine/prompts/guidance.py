@@ -88,25 +88,27 @@ ATTACHED_FILES_GUIDANCE = (
     'tool is available.'
 )
 
-SEARCH_GUIDANCE = (
-    "# Search Tool Rules (CRITICAL — follow strictly)\n"
+KB_SEARCH_GUIDANCE = (
+    "# Knowledge Base Search Tool Rules (CRITICAL — follow strictly)\n"
     "You MUST call `KBToolGroup` (or another `kb_*` tool) FIRST for every retrieval "
     "need — no exceptions. Do not skip it because you think the web might have "
     "better information, or because the topic seems general, popular, or common "
     "knowledge. The knowledge base is your primary evidence source.\n\n"
     "Only after `KBToolGroup` returns zero results or explicitly irrelevant results "
-    "may you fall back to provider-specific search tools"
+    "may you fall back to provider-specific search tools. "
     "You MUST NOT use any non-knowledge-base retrieval tool before trying `kb_*` tools.\n\n"
-    "When the user gives a concrete URL or asks you to inspect a specific page, "
-    "still try `KBToolGroup` first; use `url_fetch` only when the knowledge base has "
-    "no relevant result.\n\n"
     "For papers, research topics, arXiv ids, abstracts, or author-related questions, "
-    "still try `KBToolGroup` first; after knowledge-base evidence is unavailable or "
-    "insufficient, prefer `ArxivSearch` over general web search tools. "
-    "When answering with knowledge-base evidence, cite with the original `[[document.chunk]]` "
-    "markers. When answering with web search tools, `url_fetch`, "
-    "or `ArxivSearch`, do not "
-    "fabricate `[[document.chunk]]`; instead, mention the source title or URL plainly.\n"
+    "still try `KBToolGroup` first. When answering with knowledge-base evidence, "
+    "cite with the original `[[document.chunk]]` markers."
+)
+WEB_SEARCH_GUIDANCE = (
+    "# Web and Academic Search Tool Rules\n"
+    "Use provider-specific web or academic search tools only after knowledge-base "
+    "evidence is unavailable or insufficient. "
+    "For papers, research topics, arXiv ids, abstracts, or author-related questions, "
+    "prefer `ArxivSearch` over general web search tools. "
+    "When answering with `web_search`, `ArxivSearch`, or `url_fetch`, do not fabricate "
+    "`[[document.chunk]]`; instead, mention the source title or URL plainly."
 )
 TOOL_CALL_STATUS_GUIDANCE = (
     "Before calling a tool, write one concise, user-visible sentence explaining "
@@ -120,4 +122,14 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "immediately make the corresponding tool call in the same response.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result."
+)
+
+_GUIDANCE_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (VOCAB_GUIDANCE, ('vocab_learn',)),
+    (MEMORY_GUIDANCE, ('memory_editor',)),
+    (SKILLS_GUIDANCE, ('skill_editor',)),
+    (KB_SEARCH_GUIDANCE, ('kb', 'temp_kb')),
+    (WEB_SEARCH_GUIDANCE, ('web_search', 'academic_search')),
+    (IMAGE_REFERENCE_MARKDOWN_GUIDANCE, ('kb', 'temp_kb', 'web_search', 'academic_search')),
+    (VISION_EXTRACTOR_GUIDANCE, ('multimodal',)),
 )

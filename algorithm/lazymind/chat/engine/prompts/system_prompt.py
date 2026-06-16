@@ -3,23 +3,9 @@ from __future__ import annotations
 from .guidance import (
     ATTACHED_FILES_GUIDANCE,
     DEFAULT_SYSTEM_PROMPT,
-    IMAGE_REFERENCE_MARKDOWN_GUIDANCE,
     MEMORY_GUIDANCE,
-    SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE,
     TOOL_CALL_STATUS_GUIDANCE,
-    VISION_EXTRACTOR_GUIDANCE,
-    VOCAB_GUIDANCE,
-)
-
-
-_GUIDANCE_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (VOCAB_GUIDANCE, ('vocab_learn',)),
-    (MEMORY_GUIDANCE, ('memory_editor',)),
-    (SKILLS_GUIDANCE, ('skill_editor',)),
-    (SEARCH_GUIDANCE, ('kb', 'temp_kb')),
-    (IMAGE_REFERENCE_MARKDOWN_GUIDANCE, ('kb', 'temp_kb', 'web_search', 'academic_search', 'url_fetch')),
-    (VISION_EXTRACTOR_GUIDANCE, ('multimodal',)),
+    _GUIDANCE_REQUIREMENTS,
 )
 
 
