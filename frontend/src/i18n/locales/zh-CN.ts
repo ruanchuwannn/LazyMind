@@ -577,6 +577,7 @@ const zhCN = {
     promptSuggestionPolishTemplate:
       "请润色下面这段消息，去掉冗余表达，提升可读性和准确性：\n\n{{prompt}}",
     promptPolishing: "正在优化...",
+    autoAdvanceRunning: "自动推进中，请稍候…",
     upload: "上传文件",
     modelProviderChecking: "正在确认模型配置",
     modelProviderCheckingDesc: "检查完成后即可开始问答。",
@@ -606,6 +607,14 @@ const zhCN = {
     noReferences: "暂无参考来源",
     stopGenerate: "停止生成",
     send: "发送",
+    pluginContinue: "继续",
+    pluginRetry: "重试",
+    pluginPanelTitle: "插件面板",
+    pluginStatusRunning: "执行中",
+    pluginStatusDone: "已完成",
+    pluginStatusFailed: "失败",
+    pluginStatusWaiting: "等待确认",
+    pluginBtnDisabledHint: "步骤执行中，请稍候",
     greetingMorning: "上午好",
     greetingAfternoon: "下午好",
     greetingSuffix: "，有什么我能帮你的吗？",
@@ -786,6 +795,9 @@ const zhCN = {
     statusFailed: "失败",
     statusRunning: "进行中",
     statusInterrupted: "已中断",
+    filterAll: "全部",
+    filterSucceeded: "已完成",
+    filterFailed: "失败",
   },
 
   knowledge: {

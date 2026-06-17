@@ -184,10 +184,14 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
                       tool_config: Optional[Dict[str, Union[str, List[str]]]] = None,
                       mcp_config: Optional[List[Dict[str, Any]]] = None,
                       trace: Optional[bool] = False,
+                      plugin_context: Optional[Dict[str, Any]] = None,
                       ) -> Union[Dict[str, Any], StreamingResponse]:
     LOG.info(
         f'[ChatServer] [MODEL_CONFIG_RECEIVED] [sid={session_id}] [user_id={user_id or ""}] '
         f'[{summarize_model_config_for_log(model_config)}]'
+    )
+    LOG.info(
+        f'[ChatServer] [PLUGIN_CONTEXT] [sid={session_id}] [plugin_context={plugin_context!r}]'
     )
     start_time = time.time()
     priority = priority or LAZYMIND_LLM_PRIORITY
@@ -229,6 +233,7 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
         'mode': mode if mode in ('auto', 'manual') else 'auto',
         'has_subagents': bool(has_subagents),
         'conversation_id': (conversation_id or '').strip(),
+        'query': query or '',
     }
     display_files: list[str] = []
     for path in resolved_files:
@@ -237,6 +242,12 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
             display_files.append(basename_from_path(path) or path)
         else:
             display_files.append(path)
+
+    from lazymind.chat.plugin.plugin_manager import resolve_plugin_injection
+    plugin_tools, plugin_system_prompt, plugin_stop_tools, agentic_config_patch = \
+        resolve_plugin_injection(plugin_context)
+    agentic_config.update(agentic_config_patch)
+
     lazyllm.globals._init_sid(sid=session_id)
     lazyllm.locals._init_sid(sid=session_id)
     inject_model_config(model_config)
@@ -249,10 +260,14 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
     # Persist the allowlist in session globals so every @handle_tool_errors-wrapped
     # tool can do a cheap runtime check before executing business logic.
     lazyllm.globals['active_tool_names'] = _collect_active_tool_names(active_configs)
+    # Plugin tools are dynamically injected and pre-validated by resolve_plugin_injection;
+    # add their names to the allowlist so the ToolGuard does not block them.
+    if plugin_stop_tools:
+        lazyllm.globals['active_tool_names'] |= set(plugin_stop_tools)
     agent_tools = build_agent_tools(active_configs)
     subagent_tools = _build_subagent_chat_tools(bool(has_subagents))
     mcp_tools = _build_mcp_tools(mcp_config) if mcp_config else []
-    all_tools = agent_tools + subagent_tools + mcp_tools
+    all_tools = agent_tools + subagent_tools + plugin_tools + mcp_tools
     set_trace_context({
         'enabled': bool(trace),
         'trace_id': session_id if trace else None,
@@ -269,6 +284,8 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
         memory=memory,
         files=display_files,
     )
+    if plugin_system_prompt:
+        runtime_prompt = runtime_prompt + '\n\n' + plugin_system_prompt
 
     llm = AutoModel(model='llm')
 
@@ -283,6 +300,8 @@ async def handle_chat(query: str, history: Optional[List[Dict[str, Any]]],
         fs=FS,
         skills_dir=_cfg['skill_fs_url'],
     )
+    if plugin_stop_tools:
+        react_agent.set_stop_tools(plugin_stop_tools)
 
     async def event_stream() -> Any:
         final_result: Any = None

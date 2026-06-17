@@ -604,6 +604,7 @@ const enUS = {
     promptSuggestionPolishTemplate:
       "Please polish the following message by removing redundant wording and improving readability and accuracy:\n\n{{prompt}}",
     promptPolishing: "Optimizing...",
+    autoAdvanceRunning: "Auto mode is running, please wait…",
     upload: "Upload file",
     modelProviderChecking: "Checking model configuration",
     modelProviderCheckingDesc: "Q&A will be available once the check finishes.",
@@ -634,6 +635,14 @@ const enUS = {
     noReferences: "No references",
     stopGenerate: "Stop",
     send: "Send",
+    pluginContinue: "Continue",
+    pluginRetry: "Retry",
+    pluginPanelTitle: "Plugin Panel",
+    pluginStatusRunning: "Running",
+    pluginStatusDone: "Done",
+    pluginStatusFailed: "Failed",
+    pluginStatusWaiting: "Waiting",
+    pluginBtnDisabledHint: "Step is running, please wait…",
     // Greeting
     greetingMorning: "Good morning",
     greetingAfternoon: "Good afternoon",
@@ -820,6 +829,9 @@ const enUS = {
     statusFailed: "Failed",
     statusRunning: "In progress",
     statusInterrupted: "Interrupted",
+    filterAll: "All",
+    filterSucceeded: "Succeeded",
+    filterFailed: "Failed",
   },
 
   // Knowledge Base

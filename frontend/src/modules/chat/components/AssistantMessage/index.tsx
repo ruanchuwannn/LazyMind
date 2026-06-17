@@ -1,6 +1,6 @@
 import { Avatar, Button, Divider, Flex, message, Spin, Tooltip } from "antd";
 import { trim } from "lodash";
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -21,6 +21,8 @@ import {
 } from "@/api/generated/chatbot-client";
 import { AgentAppsAuth } from "@/components/auth";
 import { ChatServiceApi } from "@/modules/chat/utils/request";
+import { usePluginStore } from "@/modules/chat/store/pluginPanel";
+import { PluginPanel } from "@/modules/chat/components/PluginPanel";
 import MultiAnswerDisplay, { type PreferenceType } from "../MultiAnswerDisplay";
 import FeedbackModal from "../FeedbackModal";
 
@@ -196,6 +198,23 @@ const AssistantMessage = (props: any) => {
     localFeedbackType: normalizeFeedbackType(item?.feed_back),
     targetHistoryId: undefined,
   });
+
+  const loadActiveSession = usePluginStore((s) => s.loadActiveSession);
+  // Eagerly load the plugin session so the panel appears without waiting for component mount.
+  useEffect(() => {
+    if (index === length - 1 && sessionId) {
+      loadActiveSession(sessionId);
+    }
+  }, [index, length, sessionId, loadActiveSession]);
+
+  const pluginSession = usePluginStore((s) => {
+    const byConv = s.sessionByConversation;
+    if (sessionId && byConv[sessionId]) return byConv[sessionId];
+    // Fall back to any available session (at most one active per UI view).
+    const sessions = Object.values(byConv).filter(Boolean);
+    return sessions.length > 0 ? sessions[0] : null;
+  });
+  const pluginConversationId = pluginSession?.conversation_id ?? sessionId;
 
   useEffect(() => {
     dispatch({
@@ -886,6 +905,12 @@ const AssistantMessage = (props: any) => {
             />
           </div>
           {index === length - 1 && renderBottom()}
+          {index === length - 1 && pluginSession && (
+            <PluginPanel
+              conversationId={pluginConversationId}
+              onSendMessage={(text) => props.sendMessage?.(text)}
+            />
+          )}
         </div>
         <FeedbackModal
           visible={feedbackState.showModal}
@@ -931,6 +956,12 @@ const AssistantMessage = (props: any) => {
             renderFooter()}
         </div>
         {index === length - 1 && renderBottom()}
+        {index === length - 1 && pluginSession && (
+          <PluginPanel
+            conversationId={pluginConversationId}
+            onSendMessage={(text) => props.sendMessage?.(text)}
+          />
+        )}
       </div>
       <FeedbackModal
         visible={feedbackState.showModal}
