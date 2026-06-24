@@ -41,6 +41,14 @@ class ToolGroupConfig:
     description: str
     instance: Any
     model_role: str | None = None
+    pick_first_valid: bool = False
+
+    def __post_init__(self) -> None:
+        if self.pick_first_valid and not isinstance(self.instance, (list, tuple)):
+            raise TypeError(
+                'instance must be a list or tuple when pick_first_valid is True, '
+                f'got {type(self.instance).__name__}'
+            )
 
 
 _WEB_SEARCH_ENGINE_INSTANCES: list = [
@@ -54,11 +62,6 @@ _ACADEMIC_SEARCH_ENGINE_INSTANCES: list = [
     SciverseSearch(),
     ArxivSearch(skip_auth=True),
 ]
-
-_PICK_FIRST_VALID_GROUPS = {
-    'web_search': ('Search the web for current information', _WEB_SEARCH_ENGINE_INSTANCES),
-    'academic_search': ('Search academic papers and scientific literature', _ACADEMIC_SEARCH_ENGINE_INSTANCES),
-}
 
 SKILL_TOOL_GROUP = ToolGroupConfig(
     name='skill',
@@ -96,13 +99,15 @@ DEFAULT_TOOLS: list[ToolGroupConfig] = [
         name='web_search',
         label='网页搜索',
         description='使用搜索引擎检索互联网内容，自动选择可用的搜索服务',
-        instance=None,
+        instance=_WEB_SEARCH_ENGINE_INSTANCES,
+        pick_first_valid=True,
     ),
     ToolGroupConfig(
         name='academic_search',
         label='学术搜索',
         description='搜索学术论文和科学文献，自动选择可用的学术搜索服务',
-        instance=None,
+        instance=_ACADEMIC_SEARCH_ENGINE_INSTANCES,
+        pick_first_valid=True,
     ),
     ToolGroupConfig(
         name='url_fetch',
@@ -249,6 +254,8 @@ def _instance_is_active(instance: Any) -> bool:
 def group_is_active(cfg: ToolGroupConfig) -> bool:
     if cfg.model_role and not is_model_role_available(cfg.model_role):
         return False
+    if cfg.pick_first_valid:
+        return any(_instance_is_active(inst) for inst in cfg.instance)
     if cfg.instance is None:
         return True
     result = _instance_is_active(cfg.instance)
@@ -261,10 +268,8 @@ def group_is_active(cfg: ToolGroupConfig) -> bool:
 def get_all_tool_groups() -> list[dict]:
     result = []
     for cfg in DEFAULT_TOOLS:
-        if cfg.name == 'web_search':
-            methods = _extract_group_methods(_WEB_SEARCH_ENGINE_INSTANCES)
-        elif cfg.name == 'academic_search':
-            methods = _extract_group_methods(_ACADEMIC_SEARCH_ENGINE_INSTANCES)
+        if cfg.pick_first_valid:
+            methods = _extract_group_methods(cfg.instance)
         else:
             methods = _extract_methods(cfg.instance)
         result.append({
@@ -303,13 +308,12 @@ def filter_tools(
 def build_agent_tools(configs: list[ToolGroupConfig]) -> list:
     result = []
     for cfg in configs:
-        if cfg.name in _PICK_FIRST_VALID_GROUPS:
-            desc, instances = _PICK_FIRST_VALID_GROUPS[cfg.name]
+        if cfg.pick_first_valid:
             result.append(dict(
                 name=cfg.name,
-                desc=desc,
+                desc=cfg.description,
                 pick_first_valid=True,
-                tools=list(instances),
+                tools=list(cfg.instance),
             ))
         else:
             result.append(cfg.instance)
