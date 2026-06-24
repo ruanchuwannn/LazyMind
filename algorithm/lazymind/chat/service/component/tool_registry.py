@@ -56,8 +56,20 @@ _ACADEMIC_SEARCH_ENGINE_INSTANCES: list = [
 ]
 
 _PICK_FIRST_VALID_GROUPS = {
-    'web_search': ('Search the web for current information', _WEB_SEARCH_ENGINE_INSTANCES),
-    'academic_search': ('Search academic papers and scientific literature', _ACADEMIC_SEARCH_ENGINE_INSTANCES),
+    'web_search': (
+        'Search the web for current information. Each search query must represent '
+        'one search intent; if the user asks for multiple unrelated keywords or '
+        'topics, search them separately instead of combining them into one query.',
+        _WEB_SEARCH_ENGINE_INSTANCES,
+    ),
+    'academic_search': (
+        'Search academic papers and scientific literature. For papers, research '
+        'topics, abstracts, identifiers, or author-related questions, prefer '
+        'academic evidence over general web evidence after internal knowledge is '
+        'unavailable or insufficient. When answering with academic evidence, do '
+        'not fabricate [[document.chunk]] markers; mention the source title or URL.',
+        _ACADEMIC_SEARCH_ENGINE_INSTANCES,
+    ),
 }
 
 SKILL_TOOL_GROUP = ToolGroupConfig(
