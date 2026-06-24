@@ -1,4 +1,8 @@
 from lazymind.chat.service.component import AgentEventFrameTranslator
+from lazymind.chat.service.component.tool_rendering import (
+    _tool_call_frame_text,
+    _tool_result_frame_text,
+)
 from lazymind.chat.service.utils.citations import (
     CITATION_REFS_KEY,
     annotate_citations,
@@ -68,3 +72,75 @@ def test_translator_counts_tool_call_turns_not_individual_calls():
         ],
     })
     assert translator.tool_call_turns == 2
+
+
+def test_searchbase_tool_rendering_extracts_provider_brand():
+    text, preview_value = _tool_call_frame_text({
+        'id': 'call-tavily',
+        'function': {
+            'name': 'TavilySearch_search',
+            'arguments': {'query': 'agent news', 'max_results': 5},
+        },
+    })
+
+    assert preview_value == 'agent news'
+    assert 'Searching **Tavily** for **agent news**.' in text
+    assert '"name":"TavilySearch_search"' in text
+
+    result_text = _tool_result_frame_text({
+        'id': 'call-tavily',
+        'name': 'TavilySearch_search',
+        'result': [{'title': 'Agent news item', 'url': 'https://example.test'}],
+    }, preview_value=preview_value)
+
+    assert '**Tavily** search results for **agent news** are ready now.' in result_text
+    assert '"name":"TavilySearch_search"' in result_text
+
+
+def test_searchbase_tool_rendering_handles_multiword_and_special_brands():
+    google_books_text, _ = _tool_call_frame_text({
+        'id': 'call-books',
+        'function': {
+            'name': 'GoogleBooksSearch_search',
+            'arguments': {'query': 'database internals'},
+        },
+    })
+    semantic_text, _ = _tool_call_frame_text({
+        'id': 'call-semantic',
+        'function': {
+            'name': 'SemanticScholarSearch_search',
+            'arguments': {'query': 'retrieval augmented generation'},
+        },
+    })
+    arxiv_text, _ = _tool_call_frame_text({
+        'id': 'call-arxiv',
+        'function': {
+            'name': 'ArxivSearch_search',
+            'arguments': {'query': 'tool use agents'},
+        },
+    })
+
+    assert 'Searching **Google Books** for **database internals**.' in google_books_text
+    assert 'Searching **Semantic Scholar** for **retrieval augmented generation**.' in semantic_text
+    assert 'Searching **Arxiv** for **tool use agents**.' in arxiv_text
+
+
+def test_searchbase_tool_rendering_supports_zh_and_content_methods():
+    call_text, preview_value = _tool_call_frame_text({
+        'id': 'call-content',
+        'function': {
+            'name': 'SciverseSearch_get_content',
+            'arguments': {'item': {'title': '论文标题', 'url': 'https://example.test/paper'}},
+        },
+    }, language='zh')
+
+    assert preview_value == '论文标题/https://example.test/paper'
+    assert '正在读取 **Sciverse** 搜索结果 **论文标题/https://example.test/paper**。' in call_text
+
+    result_text = _tool_result_frame_text({
+        'id': 'call-content',
+        'name': 'SciverseSearch_get_content',
+        'result': {'text': '论文正文'},
+    }, language='zh', preview_value=preview_value)
+
+    assert '已成功读取 **Sciverse** 搜索结果 **论文标题/https://example.test/paper** 的内容。' in result_text
