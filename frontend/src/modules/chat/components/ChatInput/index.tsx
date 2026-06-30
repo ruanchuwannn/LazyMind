@@ -12,6 +12,7 @@ import {
 import { RcFile } from "antd/es/upload";
 import { Badge, Button, Input, message, Spin, Tooltip } from "antd";
 import {
+  BulbOutlined,
   CloseOutlined,
   CommentOutlined,
   EditOutlined,
@@ -52,6 +53,8 @@ import { PromptServiceApi } from "@/modules/chat/utils/request";
 const { TextArea } = Input;
 
 const MAX_UPLOAD_FILES = 3;
+export const SKILL_DEPOSIT_MIN_USER_TURNS = 3;
+export const SKILL_DEPOSIT_MIN_TOOL_CALL_TURNS = 8;
 
 const PROMPT_SUGGESTIONS = [
   {
@@ -191,6 +194,8 @@ interface ChatInputProps {
   citeMessages?: string[];
   onRemoveCiteMessage?: (index: number) => void;
   onClearCiteMessage?: () => void;
+  skillDepositStats?: SkillDepositStats;
+  onSkillDeposit?: () => void;
 }
 
 export interface ChatFileList {
@@ -199,6 +204,11 @@ export interface ChatFileList {
   base64: string;
   suffix: string;
   size: string;
+}
+
+export interface SkillDepositStats {
+  userTurns: number;
+  toolCallTurns: number;
 }
 
 export interface ChatInputImperativeProps {
@@ -278,6 +288,8 @@ const ChatInput = forwardRef<ChatInputImperativeProps, ChatInputProps>(
       citeMessages,
       onRemoveCiteMessage,
       onClearCiteMessage,
+      skillDepositStats,
+      onSkillDeposit,
       onPluginSettingsChange,
       initialPluginSettings,
       hasPluginSession,
@@ -503,6 +515,48 @@ const ChatInput = forwardRef<ChatInputImperativeProps, ChatInputProps>(
       disabled || isPromptPolishing || !value?.trim() || isUploading;
     const shouldShowPromptSuggestions =
       showPromptSuggestions && !disabled && !isStreaming && value.trim().length > 0;
+    const skillDepositUserTurns = skillDepositStats?.userTurns ?? 0;
+    const skillDepositToolCallTurns = skillDepositStats?.toolCallTurns ?? 0;
+    const missingSkillDepositUserTurns = Math.max(
+      0,
+      SKILL_DEPOSIT_MIN_USER_TURNS - skillDepositUserTurns,
+    );
+    const missingSkillDepositToolTurns = Math.max(
+      0,
+      SKILL_DEPOSIT_MIN_TOOL_CALL_TURNS - skillDepositToolCallTurns,
+    );
+    const isSkillDepositReady =
+      missingSkillDepositUserTurns === 0 && missingSkillDepositToolTurns === 0;
+    const isSkillDepositDisabled =
+      !isSkillDepositReady || disabled || isPromptPolishing || isStreaming || !onSkillDeposit;
+    const skillDepositTooltip = useMemo(() => {
+      if (isSkillDepositReady) {
+        return t("chat.skillDepositReadyTooltip");
+      }
+      const missingParts: string[] = [];
+      if (missingSkillDepositUserTurns > 0) {
+        missingParts.push(
+          t("chat.skillDepositMissingUserTurns", {
+            count: missingSkillDepositUserTurns,
+          }),
+        );
+      }
+      if (missingSkillDepositToolTurns > 0) {
+        missingParts.push(
+          t("chat.skillDepositMissingToolTurns", {
+            count: missingSkillDepositToolTurns,
+          }),
+        );
+      }
+      return t("chat.skillDepositDisabledTooltip", {
+        missing: missingParts.join(t("chat.skillDepositMissingSeparator")),
+      });
+    }, [
+      isSkillDepositReady,
+      missingSkillDepositToolTurns,
+      missingSkillDepositUserTurns,
+      t,
+    ]);
 
     useEffect(() => {
       setTimeout(() => onHeightChange?.(), 0);
@@ -547,6 +601,13 @@ const ChatInput = forwardRef<ChatInputImperativeProps, ChatInputProps>(
       onChange("");
       setText("");
       onClearCiteMessage?.();
+    };
+
+    const handleSkillDeposit = () => {
+      if (isSkillDepositDisabled) {
+        return;
+      }
+      onSkillDeposit?.();
     };
 
     const handleInputChange = (text: string) => {
@@ -856,6 +917,28 @@ const ChatInput = forwardRef<ChatInputImperativeProps, ChatInputProps>(
                   >
                     {t("chat.promptTemplate")}
                   </div>
+                  <Tooltip title={skillDepositTooltip}>
+                    <div
+                      className={`input-bottom-actions-left-item skill-deposit-action${isSkillDepositDisabled ? " is-disabled" : ""}`}
+                      aria-disabled={isSkillDepositDisabled}
+                      role="button"
+                      tabIndex={isSkillDepositDisabled ? -1 : 0}
+                      onClick={handleSkillDeposit}
+                      onKeyDown={(event) => {
+                        if (
+                          isSkillDepositDisabled ||
+                          (event.key !== "Enter" && event.key !== " ")
+                        ) {
+                          return;
+                        }
+                        event.preventDefault();
+                        handleSkillDeposit();
+                      }}
+                    >
+                      <BulbOutlined />
+                      {t("chat.skillDeposit")}
+                    </div>
+                  </Tooltip>
                   <ChatConfigModal
                     key={
                       configResetKey != null

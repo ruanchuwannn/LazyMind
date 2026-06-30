@@ -5,6 +5,7 @@ import {
   forwardRef,
   useImperativeHandle,
   useCallback,
+  useMemo,
   ReactNode,
 } from "react";
 import { Spin, Flex, Tooltip, message } from "antd";
@@ -33,6 +34,9 @@ import ChatInput, {
   ChatFileList,
   SendMessageParams,
   ChatInputImperativeProps,
+  SKILL_DEPOSIT_MIN_TOOL_CALL_TURNS,
+  SKILL_DEPOSIT_MIN_USER_TURNS,
+  type SkillDepositStats,
 } from "../ChatInput";
 import { ChatConfig } from "../ChatConfigs";
 import { allowedImageTypes } from "../ImageUpload";
@@ -52,6 +56,7 @@ import {
 const ThinkIcon = new URL("../../assets/images/think.png", import.meta.url)
   .href;
 const MAX_CITE_MESSAGE_COUNT = 3;
+const SKILL_DEPOSIT_REMINDER_KEY_PREFIX = "skill-deposit-reminded:";
 
 function buildCitedMessageText(text: string, citeMessages?: string[]) {
   const normalizedText = text.trim();
@@ -90,6 +95,28 @@ function getCiteMessages(message?: { cite_message?: string; cite_messages?: stri
     return inputCites;
   }
   return splitCiteMessages(message?.cite_message);
+}
+
+function getSkillDepositStats(messageList: any[]): SkillDepositStats {
+  return messageList.reduce<SkillDepositStats>(
+    (stats, item) => {
+      if (item?.role === RoleTypes.USER && !item?.is_resumed) {
+        const hasText = Boolean((item.delta || item.display_delta || "").trim());
+        const hasInputs = Array.isArray(item.inputs) && item.inputs.length > 0;
+        if (hasText || hasInputs) {
+          stats.userTurns += 1;
+        }
+      }
+      if (item?.role === RoleTypes.ASSISTANT) {
+        const toolCallTurns = Number(item.tool_call_turns ?? 0);
+        if (Number.isFinite(toolCallTurns) && toolCallTurns > 0) {
+          stats.toolCallTurns += toolCallTurns;
+        }
+      }
+      return stats;
+    },
+    { userTurns: 0, toolCallTurns: 0 },
+  );
 }
 
 export interface ChatImperativeProps {
@@ -170,6 +197,7 @@ export interface ChatMessage {
   display_delta?: string;
   cite_message?: string;
   cite_messages?: string[];
+  tool_call_turns?: number;
 }
 
 const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
@@ -212,6 +240,7 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
     const messageListRef = useRef<any[]>([]);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const conversationMessagesCache = useRef<Map<string, any[]>>(new Map());
+    const skillDepositWasReadyRef = useRef(false);
 
     const [messageList, setMessageList] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
@@ -228,6 +257,13 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
     const chatInputRef = useRef<ChatInputImperativeProps>(null);
     const [inputHeight, setInputHeight] = useState(120);
     const [IS_STREAMING, setIS_STREAMING] = useState(false);
+    const skillDepositStats = useMemo(
+      () => getSkillDepositStats(messageList),
+      [messageList],
+    );
+    const canSkillDeposit =
+      skillDepositStats.userTurns >= SKILL_DEPOSIT_MIN_USER_TURNS &&
+      skillDepositStats.toolCallTurns >= SKILL_DEPOSIT_MIN_TOOL_CALL_TURNS;
 
     useImperativeHandle(ref, () => ({
       replaceMessageList,
@@ -260,6 +296,29 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
         }
       };
     }, []);
+
+    useEffect(() => {
+      if (!canSkillDeposit) {
+        skillDepositWasReadyRef.current = false;
+        return;
+      }
+      if (skillDepositWasReadyRef.current) {
+        return;
+      }
+
+      const conversationId = currentConversationIdRef.current || sessionId;
+      if (!conversationId || conversationId.startsWith("temp_")) {
+        return;
+      }
+
+      skillDepositWasReadyRef.current = true;
+      const reminderKey = `${SKILL_DEPOSIT_REMINDER_KEY_PREFIX}${conversationId}`;
+      if (sessionStorage.getItem(reminderKey)) {
+        return;
+      }
+      sessionStorage.setItem(reminderKey, "1");
+      message.info(t("chat.skillDepositReminder"));
+    }, [canSkillDeposit, sessionId, t]);
 
     useEffect(() => {
       if (editingUserMessageIndex === null) {
@@ -408,6 +467,15 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
           emitConversationActivity({ conversationId: currentId });
         }
       }
+    }
+
+    function handleSkillDeposit() {
+      setCiteMessages([]);
+      sendMessage({
+        text: t("chat.skillDepositPrompt"),
+        clearInput: true,
+        create_time: new Date().toISOString(),
+      });
     }
 
     const openSSE = async (
@@ -1031,6 +1099,10 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
       }
 
       currentConversationIdRef.current = id;
+      const nextSkillDepositStats = getSkillDepositStats(list);
+      skillDepositWasReadyRef.current =
+        nextSkillDepositStats.userTurns >= SKILL_DEPOSIT_MIN_USER_TURNS &&
+        nextSkillDepositStats.toolCallTurns >= SKILL_DEPOSIT_MIN_TOOL_CALL_TURNS;
 
       // Load plugin session for this conversation (if any) so the toolbar icon shows.
       if (id) {
@@ -1181,6 +1253,7 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
       }
 
       currentConversationIdRef.current = "";
+      skillDepositWasReadyRef.current = false;
 
       setMessageList([]);
       messageListRef.current = [];
@@ -1724,6 +1797,8 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
             citeMessages={citeMessages}
             onRemoveCiteMessage={handleRemoveCiteMessage}
             onClearCiteMessage={() => setCiteMessages([])}
+            skillDepositStats={skillDepositStats}
+            onSkillDeposit={handleSkillDeposit}
             onPluginSettingsChange={onPluginSettingsChange}
             initialPluginSettings={initialPluginSettings}
             hasPluginSession={hasPluginSession}

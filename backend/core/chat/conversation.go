@@ -431,6 +431,7 @@ func resumeFromDBOnly(db *gorm.DB, convID string, flusher http.Flusher, w http.R
 		"delta":           stripThinkTags(stripToolTags(last.Result)),
 		"finish_reason":   "FINISH_REASON_STOP",
 		"history_id":      last.ID,
+		"tool_call_turns": last.ToolCallTurns,
 	})
 }
 
@@ -444,6 +445,7 @@ func resumeCompletedFromDB(db *gorm.DB, convID string, flusher http.Flusher, w h
 			"delta":           stripThinkTags(stripToolTags(last.Result)),
 			"finish_reason":   "FINISH_REASON_STOP",
 			"history_id":      last.ID,
+			"tool_call_turns": last.ToolCallTurns,
 		})
 		return
 	}
@@ -465,6 +467,7 @@ func resumeCompletedFromDB(db *gorm.DB, convID string, flusher http.Flusher, w h
 			"delta":           stripThinkTags(stripToolTags(h.Result)),
 			"finish_reason":   finish,
 			"history_id":      h.ID,
+			"tool_call_turns": h.ToolCallTurns,
 		})
 	}
 }
@@ -883,6 +886,7 @@ func chatHistoryToResponseItem(h orm.ChatHistory) map[string]any {
 		"reason":          h.Reason,
 		"expected_answer": h.ExpectedAnswer,
 		"create_time":     h.CreateTime.UTC().Format(time.RFC3339),
+		"tool_call_turns": h.ToolCallTurns,
 	}
 }
 

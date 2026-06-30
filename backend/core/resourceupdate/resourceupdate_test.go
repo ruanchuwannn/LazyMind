@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,7 @@ func TestCountSkillReviewHistoryStatsFiltersUserAndHalfOpenWindow(t *testing.T) 
 	insertHistory(t, db, "h-before", "conv-u1", start.Add(-time.Nanosecond), "before", "", 9)
 	insertHistory(t, db, "h-other-user", "conv-u2", start.Add(15*time.Minute), "other", "", 9)
 
-	stats, err := CountSkillReviewHistoryStats(ctx, db, "user-1", start, end)
+	stats, err := CountSkillReviewHistoryStats(ctx, db, "user-1", start, end, 2, 6)
 	if err != nil {
 		t.Fatalf("count stats: %v", err)
 	}
@@ -46,6 +47,43 @@ func TestCountSkillReviewHistoryStatsFiltersUserAndHalfOpenWindow(t *testing.T) 
 	}
 	if stats.ToolCallCount != 6 {
 		t.Fatalf("expected tool call sum 6, got %d", stats.ToolCallCount)
+	}
+	if stats.QualifiedSessionCount != 1 {
+		t.Fatalf("expected 1 qualified session, got %d", stats.QualifiedSessionCount)
+	}
+}
+
+func TestCountSkillReviewHistoryStatsDoesNotCombineWeakConversations(t *testing.T) {
+	db := newResourceUpdateTestDB(t)
+	ctx := context.Background()
+	start := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	insertSkillReviewConversation(t, db, "conv-a", "user-1", start.Add(10*time.Minute), 1, 3)
+	insertSkillReviewConversation(t, db, "conv-b", "user-1", start.Add(20*time.Minute), 1, 3)
+	insertSkillReviewConversation(t, db, "conv-c", "user-1", start.Add(30*time.Minute), 1, 2)
+
+	stats, err := CountSkillReviewHistoryStats(ctx, db, "user-1", start, end, 3, 8)
+	if err != nil {
+		t.Fatalf("count stats: %v", err)
+	}
+	if stats.UserTurnCount != 3 || stats.ToolCallCount != 8 {
+		t.Fatalf("expected aggregate 3/8, got user=%d tool=%d", stats.UserTurnCount, stats.ToolCallCount)
+	}
+	if stats.QualifiedSessionCount != 0 {
+		t.Fatalf("weak conversations must not count as qualified sessions, got %d", stats.QualifiedSessionCount)
+	}
+}
+
+func TestDefaultSkillReviewStageQuantityThresholds(t *testing.T) {
+	cfg := DefaultConfig()
+	if len(cfg.Stages) != 3 {
+		t.Fatalf("expected 3 stages, got %d", len(cfg.Stages))
+	}
+	want := []int{5, 10, 20}
+	for index, threshold := range want {
+		if cfg.Stages[index].QuantityThreshold != threshold {
+			t.Fatalf("stage %d quantity threshold: got %d want %d", index, cfg.Stages[index].QuantityThreshold, threshold)
+		}
 	}
 }
 
@@ -87,6 +125,7 @@ func TestSkillPreflightFreezesRequestAndSkipsWhenBelowThreshold(t *testing.T) {
 	worker := NewWorker(db, Config{
 		MinUserTurns:       2,
 		MinToolTurns:       1,
+		Stages:             []Stage{{Window: time.Hour, Interval: time.Hour, QuantityThreshold: 1, Successes: 0}},
 		WorkerBatchSize:    1,
 		WorkerLockTTL:      time.Minute,
 		MaxAttempts:        2,
@@ -122,7 +161,8 @@ func TestSkillPreflightFreezesRequestAndSkipsWhenBelowThreshold(t *testing.T) {
 	if err := json.Unmarshal(got.RequestJSON, &frozen); err != nil {
 		t.Fatalf("unmarshal frozen request: %v", err)
 	}
-	if !frozen.WindowFrozen || frozen.RequestID == "" || frozen.UserTurnCount != 1 || frozen.ToolCallCount != 0 {
+	if !frozen.WindowFrozen || frozen.RequestID == "" || frozen.UserTurnCount != 1 || frozen.ToolCallCount != 0 ||
+		frozen.QualifiedSessionCount != 0 || frozen.QuantityThreshold != 1 {
 		t.Fatalf("unexpected frozen request: %#v", frozen)
 	}
 	if frozen.StartTime != formatTaskTime(start) || frozen.EndTime != formatTaskTime(now) {
@@ -176,6 +216,7 @@ func TestSkillWorkerCallsReviewAndExpiresOnlyStillPendingResults(t *testing.T) {
 	worker := NewWorker(db, Config{
 		MinUserTurns:     2,
 		MinToolTurns:     2,
+		Stages:           []Stage{{Window: time.Hour, Interval: time.Hour, QuantityThreshold: 1, Successes: 0}},
 		WorkerBatchSize:  1,
 		WorkerLockTTL:    time.Minute,
 		MaxAttempts:      2,
@@ -259,7 +300,7 @@ func TestSchedulerCreatesOneActiveTaskAndSettlesDoneTask(t *testing.T) {
 		QuantityCheckInterval: time.Second,
 		MinInterval:           time.Second,
 		MaxWindow:             24 * time.Hour,
-		Stages:                []Stage{{Window: 4 * time.Hour, Interval: time.Hour, Successes: 1}, {Window: 8 * time.Hour, Interval: 2 * time.Hour, Successes: 0}},
+		Stages:                []Stage{{Window: 4 * time.Hour, Interval: time.Hour, QuantityThreshold: 1, Successes: 1}, {Window: 8 * time.Hour, Interval: 2 * time.Hour, QuantityThreshold: 2, Successes: 0}},
 	}, "scheduler-1")
 	scheduler.clock = func() time.Time { return now }
 
@@ -321,8 +362,9 @@ func TestSchedulerDoesNotAdvanceWindowWhenThresholdNotReached(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	start := now.Add(-2 * time.Hour)
-	insertConversation(t, db, "conv-u1", "user-1", now)
-	insertHistory(t, db, "h1", "conv-u1", start.Add(10*time.Minute), "turn one", "", 0)
+	insertSkillReviewConversation(t, db, "conv-a", "user-1", start.Add(10*time.Minute), 1, 3)
+	insertSkillReviewConversation(t, db, "conv-b", "user-1", start.Add(20*time.Minute), 1, 3)
+	insertSkillReviewConversation(t, db, "conv-c", "user-1", start.Add(30*time.Minute), 1, 2)
 	insertSchedulerState(t, db, orm.SkillReviewSchedulerState{
 		UserID:        "user-1",
 		LastWindowEnd: start,
@@ -335,12 +377,12 @@ func TestSchedulerDoesNotAdvanceWindowWhenThresholdNotReached(t *testing.T) {
 		SchedulerBatchSize:    10,
 		SchedulerLockTTL:      time.Minute,
 		SchedulerRetryDelay:   time.Minute,
-		MinUserTurns:          2,
-		MinToolTurns:          1,
+		MinUserTurns:          3,
+		MinToolTurns:          8,
 		QuantityCheckInterval: time.Second,
 		MinInterval:           time.Second,
 		MaxWindow:             24 * time.Hour,
-		Stages:                []Stage{{Window: 4 * time.Hour, Interval: time.Hour, Successes: 0}},
+		Stages:                []Stage{{Window: 4 * time.Hour, Interval: time.Hour, QuantityThreshold: 1, Successes: 0}},
 	}, "scheduler-threshold")
 	scheduler.clock = func() time.Time { return now }
 
@@ -1269,6 +1311,30 @@ func insertHistory(t *testing.T, db *gorm.DB, id, convID string, createTime time
 	}).Error
 	if err != nil {
 		t.Fatalf("insert history %s: %v", id, err)
+	}
+}
+
+func insertSkillReviewConversation(t *testing.T, db *gorm.DB, convID, userID string, start time.Time, userTurns, toolTurns int) {
+	t.Helper()
+	insertConversation(t, db, convID, userID, start)
+	for i := 0; i < userTurns; i++ {
+		turnToolCalls := 0
+		if i == 0 {
+			turnToolCalls = toolTurns
+		}
+		insertHistory(
+			t,
+			db,
+			fmt.Sprintf("%s-h-%d", convID, i),
+			convID,
+			start.Add(time.Duration(i)*time.Minute),
+			fmt.Sprintf("turn %d", i+1),
+			"",
+			turnToolCalls,
+		)
+	}
+	if userTurns == 0 && toolTurns > 0 {
+		insertHistory(t, db, convID+"-tool-only", convID, start, "", "", toolTurns)
 	}
 }
 

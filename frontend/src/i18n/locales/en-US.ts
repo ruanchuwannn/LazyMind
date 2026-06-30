@@ -740,6 +740,20 @@ const enUS = {
     conversationGroupEarlier: "Earlier",
     noConversations: "No conversations yet",
     promptTemplate: "Common Phrases",
+    skillDeposit: "Save Experience",
+    skillDepositReadyTooltip:
+      "Save this conversation as reusable experience",
+    skillDepositDisabledTooltip: "Still need {{missing}}",
+    skillDepositMissingSeparator: ", ",
+    skillDepositMissingUserTurns: "{{count}} user turn(s)",
+    skillDepositMissingToolTurns: "{{count}} tool call turn(s)",
+    skillDepositReminder:
+      "This conversation has formed reusable experience. You can save it as a skill for future use.",
+    skillDepositPrompt:
+      "Deposit the current conversation as a skill.\n\n" +
+      "- If suitable: you must call skill_editor to create or update a skill. Do not only summarize in text.\n" +
+      "- If unsuitable: explain why directly.\n" +
+      "- Only say a skill was created or modified after skill_editor returns success; otherwise explain that it was not deposited.",
     conversationConfig: "Chat Settings",
     conversationConfigTitle: "Chat Settings",
     conversationConfigPluginMode: "Plugin Mode",

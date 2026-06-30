@@ -713,6 +713,19 @@ const zhCN = {
     conversationGroupEarlier: "以前",
     noConversations: "暂无对话",
     promptTemplate: "常用话术",
+    skillDeposit: "沉淀经验",
+    skillDepositReadyTooltip: "可将当前会话沉淀为可复用经验",
+    skillDepositDisabledTooltip: "还需要{{missing}}",
+    skillDepositMissingSeparator: "、",
+    skillDepositMissingUserTurns: "{{count}} 个用户轮次",
+    skillDepositMissingToolTurns: "{{count}} 个工具调用轮次",
+    skillDepositReminder:
+      "这次会话已经形成了一些可复用经验，可以沉淀为 skill，方便以后复用。",
+    skillDepositPrompt:
+      "请把当前会话沉淀为 skill。\n\n" +
+      "- 适合沉淀：必须调用 skill_editor 创建或更新 skill，不要只口头总结。\n" +
+      "- 不适合沉淀：直接说明原因。\n" +
+      "- 只有 skill_editor 返回成功后，才可以说已新增或修改 skill；否则说明未沉淀成功。",
     conversationConfig: "对话配置",
     conversationConfigPluginMode: "人工干预模式",
     conversationConfigPluginModeDynamic: "智能判断 (Dynamic)",
