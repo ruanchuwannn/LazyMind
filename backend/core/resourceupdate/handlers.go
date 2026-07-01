@@ -46,6 +46,9 @@ func (w *Worker) handleSkillGenerate(ctx context.Context, task orm.ResourceUpdat
 		UserID:          request.UserID,
 		StartTime:       request.StartTime,
 		EndTime:         request.EndTime,
+		TriggerReason:   skillReviewTriggerReason(request),
+		MinUserTurns:    w.cfg.MinUserTurns,
+		MinToolTurns:    w.cfg.MinToolTurns,
 		PendingSkillIDs: pendingSkillIDs,
 		ModelConfigs:    modelConfigs,
 	})
@@ -61,7 +64,7 @@ func (w *Worker) handleSkillGenerate(ctx context.Context, task orm.ResourceUpdat
 			Msg(logEventSkillReviewCallFailed)
 		return retryableOutcome("skill_review_call_failed", fmt.Errorf("http_status=%d: %w", status, err))
 	}
-	if status != 200 || resp == nil || resp.Code != 0 || resp.Data.Status != "running" || resp.Data.RequestID != request.RequestID {
+	if status != 200 || resp == nil || resp.Code != 0 || !skillReviewResponseStatusAccepted(resp.Data.Status) || resp.Data.RequestID != request.RequestID {
 		resourceUpdateWarn(logEventSkillReviewCallFailed, nil).
 			Str("task_id", task.ID).
 			Str("user_id", request.UserID).
@@ -85,6 +88,13 @@ func (w *Worker) handleSkillGenerate(ctx context.Context, task orm.ResourceUpdat
 		Int("expired_pending_skill_count", len(pendingSkillIDs)).
 		Msg(logEventSkillReviewAccepted)
 	return taskOutcome{Status: orm.ResourceUpdateTaskStatusDone}
+}
+
+func skillReviewTriggerReason(request skillGenerateRequestJSON) string {
+	if strings.TrimSpace(request.StartTriggerReason) != "" {
+		return strings.TrimSpace(request.StartTriggerReason)
+	}
+	return strings.TrimSpace(request.TriggerReason)
 }
 
 func (w *Worker) freezeSkillRequest(ctx context.Context, task orm.ResourceUpdateTask) (skillGenerateRequestJSON, taskOutcome) {
@@ -414,6 +424,15 @@ func safeSkillRequestID(resp *algo.SkillReviewResponse) string {
 		return ""
 	}
 	return resp.Data.RequestID
+}
+
+func skillReviewResponseStatusAccepted(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "running", "completed":
+		return true
+	default:
+		return false
+	}
 }
 
 func safeMemoryStatus(resp *algo.MemoryReviewResponse) string {

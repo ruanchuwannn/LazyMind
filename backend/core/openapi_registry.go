@@ -887,6 +887,8 @@ type skillReviewResultListQueryParams struct {
 	PageSize     int32  `query:"page_size"`
 	ReviewStatus string `query:"review_status"`
 	Type         string `query:"type"`
+	SkillName    string `query:"skill_name"`
+	RequestID    string `query:"requestid"`
 }
 
 type memoryReviewResultListQueryParams struct {
@@ -950,6 +952,25 @@ type skillReviewResultListOpenAPIResponse struct {
 	Page     int32                              `json:"page"`
 	PageSize int32                              `json:"page_size"`
 	Total    int64                              `json:"total"`
+}
+
+type skillReviewSummaryOpenAPIResponse struct {
+	QualifiedSessionCount int32                              `json:"qualified_session_count"`
+	UserTurnCount         int32                              `json:"user_turn_count"`
+	ToolCallCount         int32                              `json:"tool_call_count"`
+	MinUserTurns          int32                              `json:"min_user_turns"`
+	MinToolTurns          int32                              `json:"min_tool_turns"`
+	QuantityThreshold     int32                              `json:"quantity_threshold"`
+	WindowStart           string                             `json:"window_start"`
+	WindowEnd             string                             `json:"window_end"`
+	RunningTask           *resourceUpdateTaskOpenAPIResponse `json:"running_task,omitempty"`
+	RunningRequestID      string                             `json:"running_requestid,omitempty"`
+}
+
+type skillReviewRunOpenAPIResponse struct {
+	Task      resourceUpdateTaskOpenAPIResponse `json:"task"`
+	Summary   skillReviewSummaryOpenAPIResponse `json:"summary"`
+	RequestID string                            `json:"requestid"`
 }
 
 type memoryReviewResultOpenAPIResponse struct {
@@ -1869,6 +1890,22 @@ func registeredCoreOperations() []openAPIOperation {
 			Tags:        []string{"evolution"},
 			PathParams:  resourceUpdateTaskPathParams{},
 			Responses:   map[int]openAPIResponse{200: resp("Resource update task", resourceUpdateTaskOpenAPIResponse{})},
+		},
+		{
+			Method:      "GET",
+			Path:        "/skill-review:summary",
+			Summary:     "Get skill review summary",
+			Description: "Returns the current review window and depositable conversation count for manual skill review.",
+			Tags:        []string{"skill-review"},
+			Responses:   map[int]openAPIResponse{200: resp("Skill review summary", skillReviewSummaryOpenAPIResponse{})},
+		},
+		{
+			Method:      "POST",
+			Path:        "/skill-review:run",
+			Summary:     "Run manual skill review",
+			Description: "Creates a manual skill review task for the current review window when at least one conversation is depositable.",
+			Tags:        []string{"skill-review"},
+			Responses:   map[int]openAPIResponse{200: resp("Manual skill review task", skillReviewRunOpenAPIResponse{})},
 		},
 		{
 			Method:      "GET",

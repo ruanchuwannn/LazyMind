@@ -164,6 +164,50 @@ export interface SkillShareRecord {
   decidedAt?: string;
 }
 
+export interface ResourceUpdateTaskRecord {
+  id: string;
+  taskType: string;
+  resourceType: string;
+  triggerType: string;
+  triggerId: string;
+  status: string;
+  errorCode: string;
+  errorMessage: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface SkillReviewSummaryRecord {
+  qualifiedSessionCount: number;
+  userTurnCount: number;
+  toolCallCount: number;
+  minUserTurns: number;
+  minToolTurns: number;
+  quantityThreshold: number;
+  windowStart: string;
+  windowEnd: string;
+  runningTask?: ResourceUpdateTaskRecord;
+  runningRequestId: string;
+}
+
+export interface SkillReviewRunRecord {
+  task: ResourceUpdateTaskRecord | null;
+  summary: SkillReviewSummaryRecord;
+  requestId: string;
+}
+
+export interface SkillReviewResultRecord {
+  id: string;
+  skillName: string;
+  type: string;
+  reviewStatus: string;
+  requestId: string;
+  summary: string;
+  time: string;
+}
+
 type RawObject = Record<string, unknown>;
 
 const toRawObject = (value: unknown): RawObject | null => {
@@ -308,6 +352,65 @@ const unwrapEnvelope = <T>(payload: unknown): T => {
   }
 
   return payload as T;
+};
+
+const normalizeResourceUpdateTask = (value: unknown): ResourceUpdateTaskRecord | null => {
+  const raw = toRawObject(value);
+  const id = toStringValue(raw?.id, "");
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    taskType: toStringValue(raw?.task_type, ""),
+    resourceType: toStringValue(raw?.resource_type, ""),
+    triggerType: toStringValue(raw?.trigger_type, ""),
+    triggerId: toStringValue(raw?.trigger_id, ""),
+    status: toStringValue(raw?.status, ""),
+    errorCode: toStringValue(raw?.error_code, ""),
+    errorMessage: toStringValue(raw?.error_message, ""),
+    createdAt: toStringValue(raw?.created_at, ""),
+    updatedAt: toStringValue(raw?.updated_at, ""),
+    startedAt: toStringValue(raw?.started_at, "") || undefined,
+    finishedAt: toStringValue(raw?.finished_at, "") || undefined,
+  };
+};
+
+const normalizeSkillReviewSummary = (payload: unknown): SkillReviewSummaryRecord => {
+  const raw = toRawObject(payload);
+  return {
+    qualifiedSessionCount: toNumberValue(raw?.qualified_session_count, 0),
+    userTurnCount: toNumberValue(raw?.user_turn_count, 0),
+    toolCallCount: toNumberValue(raw?.tool_call_count, 0),
+    minUserTurns: toNumberValue(raw?.min_user_turns, 0),
+    minToolTurns: toNumberValue(raw?.min_tool_turns, 0),
+    quantityThreshold: toNumberValue(raw?.quantity_threshold, 0),
+    windowStart: toStringValue(raw?.window_start, ""),
+    windowEnd: toStringValue(raw?.window_end, ""),
+    runningTask: normalizeResourceUpdateTask(raw?.running_task) || undefined,
+    runningRequestId: toStringValue(raw?.running_requestid, ""),
+  };
+};
+
+const normalizeSkillReviewResult = (value: unknown): SkillReviewResultRecord | null => {
+  const raw = toRawObject(value);
+  const id = toStringValue(raw?.id, "");
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    skillName: toStringValue(raw?.skill_name, ""),
+    type: toStringValue(raw?.type, ""),
+    reviewStatus: toStringValue(raw?.review_status, ""),
+    requestId: toStringValue(raw?.requestid, ""),
+    summary: toStringValue(raw?.summary, ""),
+    time: toStringValue(raw?.time, ""),
+  };
 };
 
 const extractSkillId = (raw: SkillNode): string => {
@@ -924,6 +1027,55 @@ export async function listSkillAssets(
 ): Promise<SkillAssetRecord[]> {
   const result = await listSkillAssetsPage(options);
   return result.records;
+}
+
+export async function getSkillReviewSummary(): Promise<SkillReviewSummaryRecord> {
+  const response = await axiosInstance.get(`${coreBasePath}/skill-review:summary`);
+  const payload = unwrapEnvelope<unknown>(response.data);
+  return normalizeSkillReviewSummary(payload);
+}
+
+export async function runSkillReview(): Promise<SkillReviewRunRecord> {
+  const response = await axiosInstance.post(`${coreBasePath}/skill-review:run`);
+  const payload = unwrapEnvelope<unknown>(response.data);
+  const raw = toRawObject(payload);
+  return {
+    task: normalizeResourceUpdateTask(raw?.task),
+    summary: normalizeSkillReviewSummary(raw?.summary),
+    requestId: toStringValue(raw?.requestid, ""),
+  };
+}
+
+export async function getResourceUpdateTask(
+  taskId: string,
+): Promise<ResourceUpdateTaskRecord | null> {
+  const response = await axiosInstance.get(
+    `${coreBasePath}/evolution/tasks/${encodeURIComponent(taskId)}`,
+  );
+  const payload = unwrapEnvelope<unknown>(response.data);
+  return normalizeResourceUpdateTask(payload);
+}
+
+export async function listSkillReviewResultsByRequest(
+  requestId: string,
+): Promise<SkillReviewResultRecord[]> {
+  if (!requestId.trim()) {
+    return [];
+  }
+
+  const response = await axiosInstance.get(`${coreBasePath}/skill-review-results`, {
+    params: {
+      page: 1,
+      page_size: 50,
+      requestid: requestId.trim(),
+    },
+  });
+  const payload = unwrapEnvelope<unknown>(response.data);
+  const raw = toRawObject(payload);
+  const items = Array.isArray(raw?.items) ? raw.items : [];
+  return items
+    .map((item) => normalizeSkillReviewResult(item))
+    .filter((item): item is SkillReviewResultRecord => Boolean(item));
 }
 
 export async function listSkillTags(): Promise<string[]> {

@@ -2245,6 +2245,29 @@ const enUS = {
     memorySkillDraftPreviewFailed: "Failed to load skill draft",
     memorySkillDraftDefaultInstruction:
       "Generate a skill draft from the accepted suggestions.",
+    memoryManualSkillReviewTitle: "Manual Skill Review",
+    memoryManualSkillReviewCount:
+      "{{count}} depositable experience conversations available",
+    memoryManualSkillReviewEmpty: "No depositable experience conversations yet",
+    memoryManualSkillReviewNoContent:
+      "Continue using tools to complete tasks and depositable content will appear here automatically.",
+    memoryManualSkillReviewReady:
+      "Save reusable experience from historical depositable conversations",
+    memoryManualSkillReviewRun: "Save Experience",
+    memoryManualSkillReviewRefresh: "Refresh depositable conversation count",
+    memoryManualSkillReviewLoadFailed:
+      "Failed to load depositable conversation count",
+    memoryManualSkillReviewRunFailed: "Failed to start manual Skill Review",
+    memoryManualSkillReviewStarted: "Skill Review started",
+    memoryManualSkillReviewDone: "This Skill Review is complete",
+    memoryManualSkillReviewNewSkills: "New skills",
+    memoryManualSkillReviewUpdatedSkills: "Updated skills",
+    memoryManualSkillReviewNoResult:
+      "This Review has not produced new skills or update suggestions yet",
+    memoryManualSkillReviewConfirmHint:
+      "If confirmation is needed, check pending changes in the skill list.",
+    memoryManualSkillReviewFailed: "This Skill Review failed",
+    memoryManualSkillReviewSkipped: "This Skill Review was skipped",
     memoryPreferenceDraftEmpty: "There is no pending habit draft",
     memoryPreferenceDraftStatus: "Draft status: {{status}}",
     memoryPreferenceDraftVersion: "Draft version: {{version}}",
