@@ -2152,7 +2152,9 @@ const zhCN = {
     memoryManualSkillReviewRefresh: "刷新可沉淀会话数量",
     memoryManualSkillReviewLoadFailed: "加载可沉淀会话数量失败",
     memoryManualSkillReviewRunFailed: "手动 Skill Review 发起失败",
-    memoryManualSkillReviewStarted: "已发起 Skill Review",
+    memoryManualSkillReviewStarted: "已发起 Skill Review，通常需要 2～3 分钟，请稍候。",
+    memoryManualSkillReviewRunningHint:
+      "正在分析历史会话并生成 skill 建议，通常需要 2～3 分钟。完成后会自动刷新结果，请勿重复点击。",
     memoryManualSkillReviewDone: "本次 Skill Review 已完成",
     memoryManualSkillReviewNewSkills: "新增 skill",
     memoryManualSkillReviewUpdatedSkills: "修改已有 skill",

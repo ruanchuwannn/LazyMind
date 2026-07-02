@@ -264,6 +264,18 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
     const canSkillDeposit =
       skillDepositStats.userTurns >= SKILL_DEPOSIT_MIN_USER_TURNS &&
       skillDepositStats.toolCallTurns >= SKILL_DEPOSIT_MIN_TOOL_CALL_TURNS;
+    const isSkillDepositTurnFinished = useMemo(() => {
+      const lastAssistantMessage = messageList.findLast(
+        (item) => item?.role === RoleTypes.ASSISTANT,
+      );
+      return Boolean(
+        lastAssistantMessage &&
+          lastAssistantMessage.finish_reason !==
+            ChatConversationsResponseFinishReasonEnum.FinishReasonUnspecified,
+      );
+    }, [messageList]);
+    const shouldRemindSkillDeposit =
+      canSkillDeposit && isSkillDepositTurnFinished && !IS_STREAMING && !loading;
 
     useImperativeHandle(ref, () => ({
       replaceMessageList,
@@ -302,6 +314,9 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
         skillDepositWasReadyRef.current = false;
         return;
       }
+      if (!shouldRemindSkillDeposit) {
+        return;
+      }
       if (skillDepositWasReadyRef.current) {
         return;
       }
@@ -318,7 +333,7 @@ const ChatContainerComponent = forwardRef<ChatImperativeProps, Props>(
       }
       sessionStorage.setItem(reminderKey, "1");
       message.info(t("chat.skillDepositReminder"));
-    }, [canSkillDeposit, sessionId, t]);
+    }, [canSkillDeposit, shouldRemindSkillDeposit, sessionId, t]);
 
     useEffect(() => {
       if (editingUserMessageIndex === null) {

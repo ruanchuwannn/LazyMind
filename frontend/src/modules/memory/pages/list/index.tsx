@@ -388,7 +388,18 @@ export default function MemoryManagementListPage() {
               </Tooltip>
             </Space>
           </div>
-          {manualSkillReviewResultStatus ? (
+          {manualSkillReviewRunning ? (
+            <div className="memory-manual-skill-review-result is-running">
+              <span className="memory-manual-skill-review-result-icon">
+                <InfoCircleOutlined />
+              </span>
+              <div className="memory-manual-skill-review-result-body">
+                <span className="memory-manual-skill-review-result-hint">
+                  {t("admin.memoryManualSkillReviewRunningHint")}
+                </span>
+              </div>
+            </div>
+          ) : manualSkillReviewResultStatus ? (
             <div
               className={`memory-manual-skill-review-result ${
                 manualSkillReviewResultStatus === "done"

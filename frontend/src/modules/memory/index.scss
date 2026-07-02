@@ -356,6 +356,11 @@
     border-color: #fedf89;
     background: #fffcf5;
   }
+
+  &.is-running {
+    border-color: #b9ddff;
+    background: #f5fbff;
+  }
 }
 
 .memory-manual-skill-review-result-icon {
@@ -372,6 +377,10 @@
 
   .memory-manual-skill-review-result.is-warning & {
     color: #b54708;
+  }
+
+  .memory-manual-skill-review-result.is-running & {
+    color: #1570ef;
   }
 }
 

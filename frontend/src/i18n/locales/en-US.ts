@@ -2258,7 +2258,10 @@ const enUS = {
     memoryManualSkillReviewLoadFailed:
       "Failed to load depositable conversation count",
     memoryManualSkillReviewRunFailed: "Failed to start manual Skill Review",
-    memoryManualSkillReviewStarted: "Skill Review started",
+    memoryManualSkillReviewStarted:
+      "Skill Review started. This usually takes 2-3 minutes.",
+    memoryManualSkillReviewRunningHint:
+      "Analyzing historical conversations and generating skill suggestions. This usually takes 2-3 minutes; results will refresh automatically.",
     memoryManualSkillReviewDone: "This Skill Review is complete",
     memoryManualSkillReviewNewSkills: "New skills",
     memoryManualSkillReviewUpdatedSkills: "Updated skills",
